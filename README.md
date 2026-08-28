@@ -58,7 +58,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 完了: 工程3「Activity Monitorとの照合」
 - 完了: 工程4「メモリプレッシャー取得」
 - 完了: 工程5「SQLite保存」
-- 次工程: 工程6「常時監視とライフサイクル」
+- 完了: 工程6「常時監視とライフサイクル」
+- 次工程: 工程7「履歴集約と保存期限」
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 
