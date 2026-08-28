@@ -98,6 +98,68 @@ final class MemoryMonitoringEngineTests: XCTestCase {
     )
   }
 
+  func testStartAutomaticallyMaintainsExpiredHistory() throws {
+    let database = try makeDatabase()
+    let day: TimeInterval = 24 * 60 * 60
+    let now = 40 * day
+    try database.insert(
+      samples: [Self.sample(timestamp: now - 2 * day, uptime: 100)]
+    )
+    let sequence = MonitoringOutcomeSequence([
+      .sample(Self.sample(timestamp: now, uptime: 1_000))
+    ])
+    let clock = TestMonitoringClock(timestamp: now, uptime: 1_000)
+    let engine = makeEngine(
+      database: database,
+      sequence: sequence,
+      clock: clock
+    )
+    defer { engine.stop() }
+
+    try engine.start()
+
+    XCTAssertEqual(try database.sampleCount(), 1)
+    XCTAssertEqual(try database.aggregateCount(resolution: .oneMinute), 1)
+    XCTAssertEqual(try database.aggregateCount(resolution: .fiveMinutes), 1)
+  }
+
+  func testAutomaticMaintenanceWaitsOneHourBetweenSuccessfulSamples() throws {
+    let database = try makeDatabase()
+    let day: TimeInterval = 24 * 60 * 60
+    let now = 40 * day
+    let expiredTimestamp = now - 2 * day
+    let sequence = MonitoringOutcomeSequence([
+      .sample(Self.sample(timestamp: now, uptime: 1_000)),
+      .sample(Self.sample(timestamp: now + 5, uptime: 1_005)),
+      .sample(Self.sample(timestamp: now + 3_605, uptime: 4_605)),
+    ])
+    let clock = TestMonitoringClock(timestamp: now, uptime: 1_000)
+    let engine = makeEngine(
+      database: database,
+      sequence: sequence,
+      clock: clock
+    )
+    defer { engine.stop() }
+    try engine.start()
+    try database.insert(
+      samples: [Self.sample(timestamp: expiredTimestamp, uptime: 100)]
+    )
+
+    XCTAssertTrue(engine.recordSampleNow())
+    XCTAssertTrue(
+      try database.fetchSamples().contains {
+        $0.timestampUTC == Date(timeIntervalSince1970: expiredTimestamp)
+      }
+    )
+
+    XCTAssertTrue(engine.recordSampleNow())
+    XCTAssertFalse(
+      try database.fetchSamples().contains {
+        $0.timestampUTC == Date(timeIntervalSince1970: expiredTimestamp)
+      }
+    )
+  }
+
   func testDuplicateStartIsRejected() throws {
     let database = try makeDatabase()
     let sequence = MonitoringOutcomeSequence([

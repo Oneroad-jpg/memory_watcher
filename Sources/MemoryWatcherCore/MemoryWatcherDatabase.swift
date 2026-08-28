@@ -9,7 +9,7 @@ public enum MemoryWatcherDatabaseError: Error, Equatable, Sendable {
 }
 
 public final class MemoryWatcherDatabase: @unchecked Sendable {
-  public static let currentSchemaVersion: Int32 = 2
+  public static let currentSchemaVersion: Int32 = 3
 
   public let url: URL
 
@@ -258,6 +258,143 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  public func aggregateCount(
+    resolution: MemoryHistoryResolution
+  ) throws -> Int {
+    try locked {
+      try countRows(in: aggregateTable(for: resolution))
+    }
+  }
+
+  public func fetchAggregates(
+    resolution: MemoryHistoryResolution
+  ) throws -> [MemoryHistoryAggregate] {
+    try locked {
+      let statement = try prepare(
+        selectAggregatesSQL(for: resolution),
+        operation: "prepare memory history aggregate read"
+      )
+      defer { sqlite3_finalize(statement) }
+      var aggregates: [MemoryHistoryAggregate] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE {
+          return aggregates
+        }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read memory history aggregates",
+            code: code
+          )
+        }
+        aggregates.append(
+          try decodeAggregate(from: statement, resolution: resolution)
+        )
+      }
+    }
+  }
+
+  public func performHistoryMaintenance(
+    now: Date = Date()
+  ) throws -> MemoryHistoryMaintenanceResult {
+    try performHistoryMaintenance(now: now, beforeSourceDeletion: {})
+  }
+
+  func performHistoryMaintenance(
+    now: Date,
+    beforeSourceDeletion: () throws -> Void
+  ) throws -> MemoryHistoryMaintenanceResult {
+    let nowMicroseconds = try Self.microseconds(
+      since1970: now,
+      field: "history maintenance timestamp"
+    )
+    let minute = Self.oneMinuteMicroseconds
+    let fiveMinutes = Self.fiveMinuteMicroseconds
+    let completedMinuteCutoff = nowMicroseconds / minute * minute
+    let completedFiveMinuteCutoff =
+      nowMicroseconds / fiveMinutes * fiveMinutes
+    let rawCutoff = max(
+      0,
+      nowMicroseconds - Self.rawRetentionMicroseconds
+    )
+    let oneMinuteCutoff = max(
+      0,
+      nowMicroseconds - Self.oneMinuteRetentionMicroseconds
+    )
+    let fiveMinuteCutoff = max(
+      0,
+      nowMicroseconds - Self.fiveMinuteRetentionMicroseconds
+    )
+
+    return try locked {
+      try transaction(operation: "maintain memory history") {
+        let oneMinuteBucketsUpserted = try executeReturningChanges(
+          Self.upsertOneMinuteAggregatesSQL(
+            completedBefore: completedMinuteCutoff
+          ),
+          operation: "upsert one-minute memory aggregates"
+        )
+        let fiveMinuteBucketsUpserted = try executeReturningChanges(
+          Self.upsertFiveMinuteAggregatesSQL(
+            completedBefore: completedFiveMinuteCutoff
+          ),
+          operation: "upsert five-minute memory aggregates"
+        )
+
+        try beforeSourceDeletion()
+
+        let rawSamplesDeleted = try executeReturningChanges(
+          Self.deleteRawSamplesSQL(olderThan: rawCutoff),
+          operation: "delete aggregated raw memory samples"
+        )
+        let oneMinuteBucketsDeleted = try executeReturningChanges(
+          Self.deleteOneMinuteAggregatesSQL(
+            completedBefore: oneMinuteCutoff
+          ),
+          operation: "delete rolled-up one-minute aggregates"
+        )
+        let fiveMinuteBucketsDeleted = try executeReturningChanges(
+          Self.deleteFiveMinuteAggregatesSQL(
+            completedBefore: fiveMinuteCutoff
+          ),
+          operation: "delete expired five-minute aggregates"
+        )
+        let pressureObservationsDeleted = try executeReturningChanges(
+          Self.deleteRowsSQL(
+            table: "memory_pressure_observations",
+            olderThan: fiveMinuteCutoff
+          ),
+          operation: "delete expired memory pressure observations"
+        )
+        let samplingGapsDeleted = try executeReturningChanges(
+          Self.deleteRowsSQL(
+            table: "memory_sampling_gaps",
+            olderThan: fiveMinuteCutoff
+          ),
+          operation: "delete expired memory sampling gaps"
+        )
+        let lifecycleEventsDeleted = try executeReturningChanges(
+          Self.deleteRowsSQL(
+            table: "system_lifecycle_events",
+            olderThan: fiveMinuteCutoff
+          ),
+          operation: "delete expired system lifecycle events"
+        )
+
+        return MemoryHistoryMaintenanceResult(
+          oneMinuteBucketsUpserted: oneMinuteBucketsUpserted,
+          fiveMinuteBucketsUpserted: fiveMinuteBucketsUpserted,
+          rawSamplesDeleted: rawSamplesDeleted,
+          oneMinuteBucketsDeleted: oneMinuteBucketsDeleted,
+          fiveMinuteBucketsDeleted: fiveMinuteBucketsDeleted,
+          pressureObservationsDeleted: pressureObservationsDeleted,
+          samplingGapsDeleted: samplingGapsDeleted,
+          lifecycleEventsDeleted: lifecycleEventsDeleted
+        )
+      }
+    }
+  }
+
   public func fetchSamples() throws -> [MemorySample] {
     try locked {
       let statement = try prepare(
@@ -444,6 +581,10 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       try migrateToVersion2()
       version = 2
     }
+    if version == 2 {
+      try migrateToVersion3()
+      version = 3
+    }
     guard version == Int64(Self.currentSchemaVersion) else {
       throw MemoryWatcherDatabaseError.unsupportedSchemaVersion(Int32(version))
     }
@@ -462,6 +603,14 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       try execute(Self.schemaVersion2SQL, operation: "create schema version 2")
       try recordMigration(version: 2)
       try execute("PRAGMA user_version = 2", operation: "set schema version 2")
+    }
+  }
+
+  private func migrateToVersion3() throws {
+    try transaction(operation: "migrate schema to version 3") {
+      try execute(Self.schemaVersion3SQL, operation: "create schema version 3")
+      try recordMigration(version: 3)
+      try execute("PRAGMA user_version = 3", operation: "set schema version 3")
     }
   }
 
@@ -517,6 +666,25 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  private func executeReturningChanges(
+    _ sql: String,
+    operation: String
+  ) throws -> Int {
+    try execute(sql, operation: operation)
+    guard let connection else {
+      throw MemoryWatcherDatabaseError.sqliteFailure(
+        operation: operation,
+        code: SQLITE_MISUSE,
+        message: "database connection is unavailable"
+      )
+    }
+    let changes = sqlite3_changes64(connection)
+    guard changes >= 0, let count = Int(exactly: changes) else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(operation: operation)
+    }
+    return count
+  }
+
   private func prepare(_ sql: String, operation: String) throws -> OpaquePointer {
     guard let connection else {
       throw MemoryWatcherDatabaseError.sqliteFailure(
@@ -553,6 +721,8 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       "memory_pressure_observations",
       "memory_sampling_gaps",
       "system_lifecycle_events",
+      "memory_aggregates_1m",
+      "memory_aggregates_5m",
     ]
     guard allowedTables.contains(table) else {
       throw MemoryWatcherDatabaseError.invalidValue(field: "table")
@@ -565,6 +735,35 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       throw MemoryWatcherDatabaseError.unexpectedRow(operation: "count \(table)")
     }
     return count
+  }
+
+  private func aggregateTable(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    switch resolution {
+    case .oneMinute:
+      return "memory_aggregates_1m"
+    case .fiveMinutes:
+      return "memory_aggregates_5m"
+    }
+  }
+
+  private func selectAggregatesSQL(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    """
+    SELECT
+      bucket_start_utc_microseconds,
+      sample_count,
+      average_physical_memory_bytes,
+      average_estimated_memory_used_bytes,
+      average_wired_bytes,
+      average_compressed_bytes,
+      average_estimated_cached_files_bytes,
+      average_swap_used_bytes
+    FROM \(aggregateTable(for: resolution))
+    ORDER BY bucket_start_utc_microseconds
+    """
   }
 
   private func bind(sample: MemorySample, to statement: OpaquePointer) throws {
@@ -815,6 +1014,38 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     return sample
   }
 
+  private func decodeAggregate(
+    from statement: OpaquePointer,
+    resolution: MemoryHistoryResolution
+  ) throws -> MemoryHistoryAggregate {
+    let sampleCountValue = sqlite3_column_int64(statement, 1)
+    let averages = (2...7).map {
+      sqlite3_column_double(statement, Int32($0))
+    }
+    guard
+      sampleCountValue > 0,
+      let sampleCount = Int(exactly: sampleCountValue),
+      averages.allSatisfy({ $0.isFinite && $0 >= 0 })
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode memory history aggregate"
+      )
+    }
+    return MemoryHistoryAggregate(
+      resolution: resolution,
+      bucketStartUTC: Self.date(
+        fromMicroseconds: sqlite3_column_int64(statement, 0)
+      ),
+      sampleCount: sampleCount,
+      averagePhysicalMemoryBytes: averages[0],
+      averageEstimatedMemoryUsedBytes: averages[1],
+      averageWiredBytes: averages[2],
+      averageCompressedBytes: averages[3],
+      averageEstimatedCachedFilesBytes: averages[4],
+      averageSwapUsedBytes: averages[5]
+    )
+  }
+
   private func decodeGap(from statement: OpaquePointer) throws -> MemorySamplingGap {
     guard
       let attemptCount = Int(exactly: sqlite3_column_int64(statement, 2)),
@@ -931,6 +1162,150 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
 
   private static func interval(fromMicroseconds value: Int64) -> TimeInterval {
     TimeInterval(value) / 1_000_000
+  }
+
+  private static let oneMinuteMicroseconds: Int64 = 60 * 1_000_000
+  private static let fiveMinuteMicroseconds: Int64 = 5 * oneMinuteMicroseconds
+  private static let rawRetentionMicroseconds: Int64 =
+    24 * 60 * oneMinuteMicroseconds
+  private static let oneMinuteRetentionMicroseconds: Int64 =
+    7 * 24 * 60 * oneMinuteMicroseconds
+  private static let fiveMinuteRetentionMicroseconds: Int64 =
+    30 * 24 * 60 * oneMinuteMicroseconds
+
+  private static func upsertOneMinuteAggregatesSQL(
+    completedBefore: Int64
+  ) -> String {
+    """
+    INSERT INTO memory_aggregates_1m(
+      bucket_start_utc_microseconds,
+      sample_count,
+      average_physical_memory_bytes,
+      average_estimated_memory_used_bytes,
+      average_wired_bytes,
+      average_compressed_bytes,
+      average_estimated_cached_files_bytes,
+      average_swap_used_bytes
+    )
+    SELECT
+      timestamp_utc_microseconds / \(oneMinuteMicroseconds)
+        * \(oneMinuteMicroseconds),
+      COUNT(*),
+      AVG(CAST(physical_memory_bytes AS REAL)),
+      AVG(CAST(estimated_memory_used_bytes AS REAL)),
+      AVG(CAST(wired_bytes AS REAL)),
+      AVG(CAST(compressed_bytes AS REAL)),
+      AVG(CAST(estimated_cached_files_bytes AS REAL)),
+      AVG(CAST(swap_used_bytes AS REAL))
+    FROM memory_samples
+    WHERE timestamp_utc_microseconds < \(completedBefore)
+    GROUP BY timestamp_utc_microseconds / \(oneMinuteMicroseconds)
+    ON CONFLICT(bucket_start_utc_microseconds) DO UPDATE SET
+      sample_count = excluded.sample_count,
+      average_physical_memory_bytes = excluded.average_physical_memory_bytes,
+      average_estimated_memory_used_bytes =
+        excluded.average_estimated_memory_used_bytes,
+      average_wired_bytes = excluded.average_wired_bytes,
+      average_compressed_bytes = excluded.average_compressed_bytes,
+      average_estimated_cached_files_bytes =
+        excluded.average_estimated_cached_files_bytes,
+      average_swap_used_bytes = excluded.average_swap_used_bytes
+    """
+  }
+
+  private static func upsertFiveMinuteAggregatesSQL(
+    completedBefore: Int64
+  ) -> String {
+    """
+    INSERT INTO memory_aggregates_5m(
+      bucket_start_utc_microseconds,
+      sample_count,
+      average_physical_memory_bytes,
+      average_estimated_memory_used_bytes,
+      average_wired_bytes,
+      average_compressed_bytes,
+      average_estimated_cached_files_bytes,
+      average_swap_used_bytes
+    )
+    SELECT
+      bucket_start_utc_microseconds / \(fiveMinuteMicroseconds)
+        * \(fiveMinuteMicroseconds),
+      SUM(sample_count),
+      SUM(average_physical_memory_bytes * sample_count) / SUM(sample_count),
+      SUM(average_estimated_memory_used_bytes * sample_count)
+        / SUM(sample_count),
+      SUM(average_wired_bytes * sample_count) / SUM(sample_count),
+      SUM(average_compressed_bytes * sample_count) / SUM(sample_count),
+      SUM(average_estimated_cached_files_bytes * sample_count)
+        / SUM(sample_count),
+      SUM(average_swap_used_bytes * sample_count) / SUM(sample_count)
+    FROM memory_aggregates_1m
+    WHERE bucket_start_utc_microseconds < \(completedBefore)
+    GROUP BY bucket_start_utc_microseconds / \(fiveMinuteMicroseconds)
+    ON CONFLICT(bucket_start_utc_microseconds) DO UPDATE SET
+      sample_count = excluded.sample_count,
+      average_physical_memory_bytes = excluded.average_physical_memory_bytes,
+      average_estimated_memory_used_bytes =
+        excluded.average_estimated_memory_used_bytes,
+      average_wired_bytes = excluded.average_wired_bytes,
+      average_compressed_bytes = excluded.average_compressed_bytes,
+      average_estimated_cached_files_bytes =
+        excluded.average_estimated_cached_files_bytes,
+      average_swap_used_bytes = excluded.average_swap_used_bytes
+    """
+  }
+
+  private static func deleteRawSamplesSQL(olderThan cutoff: Int64) -> String {
+    """
+    DELETE FROM memory_samples
+    WHERE timestamp_utc_microseconds < \(cutoff)
+      AND EXISTS(
+        SELECT 1
+        FROM memory_aggregates_1m
+        WHERE bucket_start_utc_microseconds =
+          memory_samples.timestamp_utc_microseconds / \(oneMinuteMicroseconds)
+            * \(oneMinuteMicroseconds)
+      )
+    """
+  }
+
+  private static func deleteOneMinuteAggregatesSQL(
+    completedBefore cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM memory_aggregates_1m
+    WHERE bucket_start_utc_microseconds + \(oneMinuteMicroseconds) <= \(cutoff)
+      AND EXISTS(
+        SELECT 1
+        FROM memory_aggregates_5m
+        WHERE bucket_start_utc_microseconds =
+          memory_aggregates_1m.bucket_start_utc_microseconds
+            / \(fiveMinuteMicroseconds) * \(fiveMinuteMicroseconds)
+      )
+    """
+  }
+
+  private static func deleteFiveMinuteAggregatesSQL(
+    completedBefore cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM memory_aggregates_5m
+    WHERE bucket_start_utc_microseconds + \(fiveMinuteMicroseconds) <= \(cutoff)
+    """
+  }
+
+  private static func deleteRowsSQL(
+    table: String,
+    olderThan cutoff: Int64
+  ) -> String {
+    precondition(
+      [
+        "memory_pressure_observations",
+        "memory_sampling_gaps",
+        "system_lifecycle_events",
+      ].contains(table)
+    )
+    return "DELETE FROM \(table) WHERE timestamp_utc_microseconds < \(cutoff)"
   }
 
   private static let insertSampleSQL = """
@@ -1164,5 +1539,43 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
 
     CREATE INDEX system_lifecycle_timestamp_index
       ON system_lifecycle_events(timestamp_utc_microseconds);
+    """
+
+  private static let schemaVersion3SQL = """
+    CREATE TABLE memory_aggregates_1m(
+      bucket_start_utc_microseconds INTEGER PRIMARY KEY
+        CHECK(
+          bucket_start_utc_microseconds >= 0
+          AND bucket_start_utc_microseconds % 60000000 = 0
+        ),
+      sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+      average_physical_memory_bytes REAL NOT NULL
+        CHECK(average_physical_memory_bytes > 0),
+      average_estimated_memory_used_bytes REAL NOT NULL
+        CHECK(average_estimated_memory_used_bytes >= 0),
+      average_wired_bytes REAL NOT NULL CHECK(average_wired_bytes >= 0),
+      average_compressed_bytes REAL NOT NULL CHECK(average_compressed_bytes >= 0),
+      average_estimated_cached_files_bytes REAL NOT NULL
+        CHECK(average_estimated_cached_files_bytes >= 0),
+      average_swap_used_bytes REAL NOT NULL CHECK(average_swap_used_bytes >= 0)
+    );
+
+    CREATE TABLE memory_aggregates_5m(
+      bucket_start_utc_microseconds INTEGER PRIMARY KEY
+        CHECK(
+          bucket_start_utc_microseconds >= 0
+          AND bucket_start_utc_microseconds % 300000000 = 0
+        ),
+      sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+      average_physical_memory_bytes REAL NOT NULL
+        CHECK(average_physical_memory_bytes > 0),
+      average_estimated_memory_used_bytes REAL NOT NULL
+        CHECK(average_estimated_memory_used_bytes >= 0),
+      average_wired_bytes REAL NOT NULL CHECK(average_wired_bytes >= 0),
+      average_compressed_bytes REAL NOT NULL CHECK(average_compressed_bytes >= 0),
+      average_estimated_cached_files_bytes REAL NOT NULL
+        CHECK(average_estimated_cached_files_bytes >= 0),
+      average_swap_used_bytes REAL NOT NULL CHECK(average_swap_used_bytes >= 0)
+    );
     """
 }

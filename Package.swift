@@ -39,7 +39,7 @@ let package = Package(
     ),
     .testTarget(
       name: "MemoryWatcherCoreTests",
-      dependencies: ["MemoryWatcherCore"]
+      dependencies: ["MemoryWatcherCore", "CSQLite"]
     ),
   ]
 )
