@@ -35,6 +35,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
   private var timer: DispatchSourceTimer?
   private var runState: MemoryMonitoringRunState = .stopped
   private var lastSampleAnchor: SystemTimelineAnchor?
+  private var lastHistoryMaintenanceUptime: TimeInterval?
 
   public init(
     database: MemoryWatcherDatabase,
@@ -112,6 +113,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
 
       runState = .running
       lastSampleAnchor = nil
+      lastHistoryMaintenanceUptime = nil
       recordSampleSlot()
       scheduleTimer()
     }
@@ -142,6 +144,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       }
       runState = .running
       lastSampleAnchor = nil
+      lastHistoryMaintenanceUptime = nil
       let event = lifecycleEvent(kind: .wake)
       do {
         try database.insert(lifecycleEvents: [event])
@@ -167,6 +170,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
         eventHandler(.failure(String(describing: error)))
       }
       lastSampleAnchor = nil
+      lastHistoryMaintenanceUptime = nil
     }
   }
 
@@ -176,6 +180,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       pressureMonitor.stop()
       runState = .stopped
       lastSampleAnchor = nil
+      lastHistoryMaintenanceUptime = nil
     }
   }
 
@@ -220,6 +225,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       return
     }
     do {
+      let maintenanceAnchor: SystemTimelineAnchor
       switch try sampleProvider() {
       case .sample(let sample):
         let current = SystemTimelineAnchor(
@@ -243,10 +249,35 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
         try database.insert(samples: [sample])
         self.lastSampleAnchor = current
         eventHandler(.sample(sample))
+        maintenanceAnchor = current
       case .gap(let gap):
         try database.insert(gaps: [gap])
         eventHandler(.gap(gap))
+        maintenanceAnchor = SystemTimelineAnchor(
+          timestampUTC: gap.timestampUTC,
+          systemUptimeSeconds: gap.systemUptimeSeconds
+        )
       }
+      runHistoryMaintenanceIfDue(at: maintenanceAnchor)
+    } catch {
+      eventHandler(.failure(String(describing: error)))
+    }
+  }
+
+  private func runHistoryMaintenanceIfDue(at anchor: SystemTimelineAnchor) {
+    if let lastHistoryMaintenanceUptime {
+      let elapsed =
+        anchor.systemUptimeSeconds - lastHistoryMaintenanceUptime
+      guard
+        elapsed < 0
+          || elapsed >= MemoryHistoryRetentionPolicy.maintenanceInterval
+      else {
+        return
+      }
+    }
+    lastHistoryMaintenanceUptime = anchor.systemUptimeSeconds
+    do {
+      _ = try database.performHistoryMaintenance(now: anchor.timestampUTC)
     } catch {
       eventHandler(.failure(String(describing: error)))
     }
