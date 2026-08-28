@@ -15,6 +15,7 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
     XCTAssertEqual(try database.sampleCount(), 0)
     XCTAssertEqual(try database.pressureObservationCount(), 0)
     XCTAssertEqual(try database.samplingGapCount(), 0)
+    XCTAssertEqual(try database.lifecycleEventCount(), 0)
     XCTAssertEqual(try database.integrityCheck(), "ok")
   }
 
@@ -30,10 +31,19 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
       )
     }
     let gaps = [Self.samplingGap()]
+    let lifecycleEvents = SystemLifecycleEventKind.allCases.enumerated().map {
+      index, kind in
+      SystemLifecycleEvent(
+        timestampUTC: Date(timeIntervalSince1970: 40_000 + Double(index)),
+        systemUptimeSeconds: 30_000 + Double(index),
+        kind: kind
+      )
+    }
 
     try database.insert(samples: samples)
     try database.insert(pressureObservations: pressureObservations)
     try database.insert(gaps: gaps)
+    try database.insert(lifecycleEvents: lifecycleEvents)
 
     XCTAssertEqual(try database.fetchSamples(), samples)
     XCTAssertEqual(
@@ -41,6 +51,14 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
       pressureObservations
     )
     XCTAssertEqual(try database.fetchSamplingGaps(), gaps)
+    XCTAssertEqual(try database.fetchLifecycleEvents(), lifecycleEvents)
+    XCTAssertEqual(
+      try database.latestSampleAnchor(),
+      SystemTimelineAnchor(
+        timestampUTC: samples[1].timestampUTC,
+        systemUptimeSeconds: samples[1].systemUptimeSeconds
+      )
+    )
     XCTAssertEqual(try database.integrityCheck(), "ok")
   }
 

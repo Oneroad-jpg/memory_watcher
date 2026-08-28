@@ -9,7 +9,7 @@ public enum MemoryWatcherDatabaseError: Error, Equatable, Sendable {
 }
 
 public final class MemoryWatcherDatabase: @unchecked Sendable {
-  public static let currentSchemaVersion: Int32 = 1
+  public static let currentSchemaVersion: Int32 = 2
 
   public let url: URL
 
@@ -189,6 +189,51 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  public func insert(lifecycleEvents: [SystemLifecycleEvent]) throws {
+    guard !lifecycleEvents.isEmpty else {
+      return
+    }
+    try locked {
+      try transaction(operation: "insert system lifecycle events") {
+        let statement = try prepare(
+          Self.insertLifecycleSQL,
+          operation: "prepare system lifecycle insert"
+        )
+        defer { sqlite3_finalize(statement) }
+
+        for event in lifecycleEvents {
+          sqlite3_reset(statement)
+          sqlite3_clear_bindings(statement)
+          try bind(
+            Self.microseconds(
+              since1970: event.timestampUTC,
+              field: "lifecycle timestamp"
+            ),
+            at: 1,
+            to: statement,
+            operation: "bind lifecycle timestamp"
+          )
+          try bind(
+            Self.microseconds(
+              interval: event.systemUptimeSeconds,
+              field: "lifecycle uptime"
+            ),
+            at: 2,
+            to: statement,
+            operation: "bind lifecycle uptime"
+          )
+          try bind(
+            event.kind.rawValue,
+            at: 3,
+            to: statement,
+            operation: "bind lifecycle kind"
+          )
+          try stepDone(statement, operation: "insert system lifecycle event")
+        }
+      }
+    }
+  }
+
   public func sampleCount() throws -> Int {
     try locked {
       try countRows(in: "memory_samples")
@@ -204,6 +249,12 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   public func samplingGapCount() throws -> Int {
     try locked {
       try countRows(in: "memory_sampling_gaps")
+    }
+  }
+
+  public func lifecycleEventCount() throws -> Int {
+    try locked {
+      try countRows(in: "system_lifecycle_events")
     }
   }
 
@@ -291,6 +342,70 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  public func fetchLifecycleEvents() throws -> [SystemLifecycleEvent] {
+    try locked {
+      let statement = try prepare(
+        Self.selectLifecycleSQL,
+        operation: "prepare system lifecycle read"
+      )
+      defer { sqlite3_finalize(statement) }
+      var events: [SystemLifecycleEvent] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE {
+          return events
+        }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(operation: "read system lifecycle events", code: code)
+        }
+        guard
+          let rawKind = text(at: 2, from: statement),
+          let kind = SystemLifecycleEventKind(rawValue: rawKind)
+        else {
+          throw MemoryWatcherDatabaseError.unexpectedRow(
+            operation: "decode system lifecycle event"
+          )
+        }
+        events.append(
+          SystemLifecycleEvent(
+            timestampUTC: Self.date(
+              fromMicroseconds: sqlite3_column_int64(statement, 0)
+            ),
+            systemUptimeSeconds: Self.interval(
+              fromMicroseconds: sqlite3_column_int64(statement, 1)
+            ),
+            kind: kind
+          )
+        )
+      }
+    }
+  }
+
+  public func latestSampleAnchor() throws -> SystemTimelineAnchor? {
+    try locked {
+      let statement = try prepare(
+        Self.selectLatestSampleAnchorSQL,
+        operation: "prepare latest sample anchor read"
+      )
+      defer { sqlite3_finalize(statement) }
+      let code = sqlite3_step(statement)
+      if code == SQLITE_DONE {
+        return nil
+      }
+      guard code == SQLITE_ROW else {
+        throw sqliteError(operation: "read latest sample anchor", code: code)
+      }
+      return SystemTimelineAnchor(
+        timestampUTC: Self.date(
+          fromMicroseconds: sqlite3_column_int64(statement, 0)
+        ),
+        systemUptimeSeconds: Self.interval(
+          fromMicroseconds: sqlite3_column_int64(statement, 1)
+        )
+      )
+    }
+  }
+
   public func integrityCheck() throws -> String {
     try locked {
       let statement = try prepare(
@@ -314,30 +429,52 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   }
 
   private func migrateIfNeeded() throws {
-    let version = try scalarInt64(
+    var version = try scalarInt64(
       "PRAGMA user_version",
       operation: "read schema version for migration"
     )
     guard version <= Int64(Self.currentSchemaVersion) else {
       throw MemoryWatcherDatabaseError.unsupportedSchemaVersion(Int32(version))
     }
-    guard version == 0 else {
-      return
+    if version == 0 {
+      try migrateToVersion1()
+      version = 1
     }
+    if version == 1 {
+      try migrateToVersion2()
+      version = 2
+    }
+    guard version == Int64(Self.currentSchemaVersion) else {
+      throw MemoryWatcherDatabaseError.unsupportedSchemaVersion(Int32(version))
+    }
+  }
 
+  private func migrateToVersion1() throws {
     try transaction(operation: "migrate schema to version 1") {
       try execute(Self.schemaVersion1SQL, operation: "create schema version 1")
-      let appliedAt = try Self.microseconds(
-        since1970: Date(),
-        field: "migration timestamp"
-      )
-      try execute(
-        "INSERT INTO schema_migrations(version, applied_at_utc_microseconds) "
-          + "VALUES (1, \(appliedAt))",
-        operation: "record schema version 1"
-      )
+      try recordMigration(version: 1)
       try execute("PRAGMA user_version = 1", operation: "set schema version 1")
     }
+  }
+
+  private func migrateToVersion2() throws {
+    try transaction(operation: "migrate schema to version 2") {
+      try execute(Self.schemaVersion2SQL, operation: "create schema version 2")
+      try recordMigration(version: 2)
+      try execute("PRAGMA user_version = 2", operation: "set schema version 2")
+    }
+  }
+
+  private func recordMigration(version: Int32) throws {
+    let appliedAt = try Self.microseconds(
+      since1970: Date(),
+      field: "migration timestamp"
+    )
+    try execute(
+      "INSERT INTO schema_migrations(version, applied_at_utc_microseconds) "
+        + "VALUES (\(version), \(appliedAt))",
+      operation: "record schema version \(version)"
+    )
   }
 
   private func transaction<T>(
@@ -415,6 +552,7 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       "memory_samples",
       "memory_pressure_observations",
       "memory_sampling_gaps",
+      "system_lifecycle_events",
     ]
     guard allowedTables.contains(table) else {
       throw MemoryWatcherDatabaseError.invalidValue(field: "table")
@@ -856,6 +994,14 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     )
     """
 
+  private static let insertLifecycleSQL = """
+    INSERT INTO system_lifecycle_events(
+      timestamp_utc_microseconds,
+      system_uptime_microseconds,
+      kind
+    ) VALUES (?, ?, ?)
+    """
+
   private static let selectSamplesSQL = """
     SELECT
       timestamp_utc_microseconds,
@@ -914,6 +1060,24 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       excess_bytes
     FROM memory_sampling_gaps
     ORDER BY timestamp_utc_microseconds, system_uptime_microseconds
+    """
+
+  private static let selectLifecycleSQL = """
+    SELECT
+      timestamp_utc_microseconds,
+      system_uptime_microseconds,
+      kind
+    FROM system_lifecycle_events
+    ORDER BY id
+    """
+
+  private static let selectLatestSampleAnchorSQL = """
+    SELECT
+      timestamp_utc_microseconds,
+      system_uptime_microseconds
+    FROM memory_samples
+    ORDER BY id DESC
+    LIMIT 1
     """
 
   private static let schemaVersion1SQL = """
@@ -985,5 +1149,20 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       ON memory_pressure_observations(timestamp_utc_microseconds);
     CREATE INDEX memory_sampling_gaps_timestamp_index
       ON memory_sampling_gaps(timestamp_utc_microseconds);
+    """
+
+  private static let schemaVersion2SQL = """
+    CREATE TABLE system_lifecycle_events(
+      id INTEGER PRIMARY KEY,
+      timestamp_utc_microseconds INTEGER NOT NULL CHECK(timestamp_utc_microseconds >= 0),
+      system_uptime_microseconds INTEGER NOT NULL CHECK(system_uptime_microseconds >= 0),
+      kind TEXT NOT NULL CHECK(
+        kind IN ('LAUNCH', 'SLEEP', 'WAKE', 'CLOCK_CHANGED', 'REBOOT_DETECTED')
+      ),
+      UNIQUE(timestamp_utc_microseconds, system_uptime_microseconds, kind)
+    );
+
+    CREATE INDEX system_lifecycle_timestamp_index
+      ON system_lifecycle_events(timestamp_utc_microseconds);
     """
 }
