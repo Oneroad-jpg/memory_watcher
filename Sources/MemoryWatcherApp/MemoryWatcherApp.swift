@@ -13,6 +13,13 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
   private var engine: MemoryMonitoringEngine?
   private var window: NSWindow?
   private var temporaryDirectory: URL?
+  private var historyReferenceDate: Date?
+  private var historyScreenStartedAt: Date?
+
+  private var isHistoryUITest: Bool {
+    arguments == ["--history-ui-smoke-test"]
+      || arguments == ["--history-ui-preview"]
+  }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     configureMonitoring()
@@ -33,6 +40,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       runLifecycleSmokeTest()
     } else if arguments == ["--login-item-smoke-test"] {
       runLoginItemSmokeTest()
+    } else if arguments == ["--history-ui-smoke-test"] {
+      runHistoryUISmokeTest()
     }
   }
 
@@ -59,6 +68,11 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     do {
       let databaseURL = try monitoringDatabaseURL()
       let database = try MemoryWatcherDatabase(url: databaseURL)
+      if isHistoryUITest {
+        let now = Date()
+        try HistoryUISmokeFixture.populate(database: database, now: now)
+        historyReferenceDate = now
+      }
       let viewModel = self.viewModel
       let engine = MemoryMonitoringEngine(database: database) { event in
         Task { @MainActor [weak viewModel] in
@@ -69,6 +83,13 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       self.database = database
       self.engine = engine
       viewModel.updateRunState(engine.state)
+      let startedAt = Date()
+      viewModel.configureHistory(
+        database: database,
+        initialPeriod: isHistoryUITest ? .thirtyDays : .twentyFourHours,
+        now: historyReferenceDate ?? Date()
+      )
+      historyScreenStartedAt = startedAt
     } catch {
       viewModel.reportStartupFailure(error)
     }
@@ -79,6 +100,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       arguments == ["--smoke-test"]
         || arguments == ["--lifecycle-smoke-test"]
         || arguments == ["--login-item-smoke-test"]
+        || isHistoryUITest
     else {
       return try MemoryWatcherDatabase.defaultURL()
     }
@@ -97,7 +119,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       rootView: FoundationView(viewModel: viewModel)
     )
     let window = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+      contentRect: NSRect(x: 0, y: 0, width: 1_080, height: 900),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
@@ -256,6 +278,59 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         result["error"] = errorDescription
       }
       self.writeSmokeResult(result)
+      NSApplication.shared.terminate(nil)
+    }
+  }
+
+  private func runHistoryUISmokeTest() {
+    waitForHistoryScreen(deadline: Date().addingTimeInterval(5))
+  }
+
+  private func waitForHistoryScreen(deadline: Date) {
+    guard Date() < deadline else {
+      writeSmokeResult([
+        "reason": "history screen did not become ready",
+        "status": "FAIL",
+      ])
+      NSApplication.shared.terminate(nil)
+      return
+    }
+    guard
+      let snapshot = viewModel.historySnapshot,
+      snapshot.period == .thirtyDays,
+      !viewModel.historyIsLoading,
+      let loadDuration = viewModel.historyLoadDurationSeconds,
+      let startedAt = historyScreenStartedAt,
+      let window
+    else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        self?.waitForHistoryScreen(deadline: deadline)
+      }
+      return
+    }
+
+    window.displayIfNeeded()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      guard let self else {
+        return
+      }
+      let readyDuration = Date().timeIntervalSince(startedAt)
+      let status =
+        snapshot.points.count >= 8_000
+          && loadDuration < 2
+          && readyDuration < 2
+          && window.isVisible
+        ? "PASS"
+        : "FAIL"
+      self.writeSmokeResult([
+        "history_load_seconds": loadDuration,
+        "history_point_count": snapshot.points.count,
+        "history_source": snapshot.points.first?.source.rawValue ?? "NONE",
+        "screen_ready_seconds": readyDuration,
+        "sleep_interval_count": snapshot.sleepIntervals.count,
+        "status": status,
+        "visible": window.isVisible,
+      ])
       NSApplication.shared.terminate(nil)
     }
   }
