@@ -12,6 +12,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
   private var database: MemoryWatcherDatabase?
   private var engine: MemoryMonitoringEngine?
   private var window: NSWindow?
+  private var menuBarController: MemoryWatcherMenuBarController?
   private var temporaryDirectory: URL?
   private var historyReferenceDate: Date?
   private var historyScreenStartedAt: Date?
@@ -21,18 +22,28 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       || arguments == ["--history-ui-preview"]
   }
 
+  private var isMenuBarTest: Bool {
+    arguments == ["--menu-bar-smoke-test"]
+      || arguments == ["--menu-bar-preview"]
+  }
+
+  private var shouldShowHistoryWindowOnLaunch: Bool {
+    arguments == ["--smoke-test"]
+      || arguments == ["--lifecycle-smoke-test"]
+      || arguments == ["--login-item-smoke-test"]
+      || isHistoryUITest
+      || arguments == ["--menu-bar-preview"]
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
-    configureMonitoring()
     configureWindow()
+    configureMenuBar()
+    configureMonitoring()
     observeSystemLifecycle()
 
-    guard let window else {
-      return
+    if shouldShowHistoryWindowOnLaunch {
+      showHistoryWindow()
     }
-    let application = NSApplication.shared
-    application.activate(ignoringOtherApps: true)
-    window.makeKeyAndOrderFront(nil)
-    window.orderFrontRegardless()
 
     if arguments == ["--smoke-test"] {
       runFoundationSmokeTest()
@@ -42,11 +53,14 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       runLoginItemSmokeTest()
     } else if arguments == ["--history-ui-smoke-test"] {
       runHistoryUISmokeTest()
+    } else if arguments == ["--menu-bar-smoke-test"] {
+      runMenuBarSmokeTest()
     }
   }
 
   func applicationDidBecomeActive(_ notification: Notification) {
     viewModel.refreshLoginItemStatus()
+    refreshMenuBar()
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(
@@ -73,10 +87,9 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         try HistoryUISmokeFixture.populate(database: database, now: now)
         historyReferenceDate = now
       }
-      let viewModel = self.viewModel
-      let engine = MemoryMonitoringEngine(database: database) { event in
-        Task { @MainActor [weak viewModel] in
-          viewModel?.receive(event)
+      let engine = MemoryMonitoringEngine(database: database) { [weak self] event in
+        Task { @MainActor [weak self] in
+          self?.handleMonitoringEvent(event)
         }
       }
       try engine.start()
@@ -90,8 +103,10 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         now: historyReferenceDate ?? Date()
       )
       historyScreenStartedAt = startedAt
+      refreshMenuBar()
     } catch {
       viewModel.reportStartupFailure(error)
+      refreshMenuBar()
     }
   }
 
@@ -101,6 +116,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         || arguments == ["--lifecycle-smoke-test"]
         || arguments == ["--login-item-smoke-test"]
         || isHistoryUITest
+        || isMenuBarTest
     else {
       return try MemoryWatcherDatabase.defaultURL()
     }
@@ -129,6 +145,58 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     window.title = "Memory Watcher"
     window.isReleasedWhenClosed = false
     self.window = window
+  }
+
+  private func configureMenuBar() {
+    menuBarController = MemoryWatcherMenuBarController(
+      toggleHistory: { [weak self] in
+        self?.toggleHistoryWindow()
+      },
+      historyWindowIsVisible: { [weak self] in
+        self?.window?.isVisible ?? false
+      },
+      setLoginEnabled: { [weak self] enabled in
+        self?.viewModel.setLoginItemEnabled(enabled)
+        self?.refreshMenuBar()
+      },
+      quitApplication: {
+        NSApplication.shared.terminate(nil)
+      }
+    )
+    refreshMenuBar()
+  }
+
+  private func handleMonitoringEvent(_ event: MemoryMonitoringEvent) {
+    viewModel.receive(event)
+    refreshMenuBar()
+  }
+
+  private func refreshMenuBar() {
+    menuBarController?.update(
+      memoryUsedBytes: viewModel.lastMemoryUsedBytes,
+      pressureLevel: viewModel.pressureLevel,
+      loginStatus: viewModel.loginItemStatus
+    )
+  }
+
+  private func showHistoryWindow() {
+    guard let window else {
+      return
+    }
+    NSApplication.shared.activate(ignoringOtherApps: true)
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+  }
+
+  private func toggleHistoryWindow() {
+    guard let window else {
+      return
+    }
+    if window.isVisible {
+      window.orderOut(nil)
+    } else {
+      showHistoryWindow()
+    }
   }
 
   private func observeSystemLifecycle() {
@@ -179,9 +247,12 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         return
       }
       let bundleIdentifier = Bundle.main.bundleIdentifier ?? "UNKNOWN"
+      let historyWindowCount = NSApplication.shared.windows.filter {
+        $0.title == "Memory Watcher" && $0.styleMask.contains(.titled)
+      }.count
       let status =
         bundleIdentifier == "com.oneroad.memorywatcher"
-          && NSApplication.shared.windows.count == 1
+          && historyWindowCount == 1
           && window.isVisible
           && self.engine?.state == .running
           && (try? self.database?.sampleCount()) ?? 0 >= 1
@@ -194,7 +265,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
           "sample_count": (try? self.database?.sampleCount()) ?? 0,
           "status": status,
           "visible": window.isVisible,
-          "window_count": NSApplication.shared.windows.count,
+          "application_window_count": NSApplication.shared.windows.count,
+          "window_count": historyWindowCount,
         ]
       )
       NSApplication.shared.terminate(nil)
@@ -286,6 +358,53 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     waitForHistoryScreen(deadline: Date().addingTimeInterval(5))
   }
 
+  private func runMenuBarSmokeTest() {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+      guard
+        let self,
+        let window = self.window,
+        let menuBarController = self.menuBarController
+      else {
+        return
+      }
+      let initiallyHidden = !window.isVisible
+      let firstButtonAction =
+        menuBarController.performStatusButtonClickForTesting()
+      let openedFromMenuBar = window.isVisible
+      let secondButtonAction =
+        menuBarController.performStatusButtonClickForTesting()
+      let closedFromMenuBar = !window.isVisible
+      let statusTitle = menuBarController.statusTitle
+      let status =
+        NSApplication.shared.activationPolicy() == .accessory
+          && menuBarController.isInstalled
+          && menuBarController.hasRequiredCommands
+          && firstButtonAction
+          && secondButtonAction
+          && initiallyHidden
+          && openedFromMenuBar
+          && closedFromMenuBar
+          && statusTitle.hasSuffix(" GB")
+          && !statusTitle.contains("—")
+          && self.engine?.state == .running
+        ? "PASS"
+        : "FAIL"
+      self.writeSmokeResult([
+        "activation_policy": "accessory",
+        "button_action_dispatched": firstButtonAction && secondButtonAction,
+        "closed_from_menu_bar": closedFromMenuBar,
+        "initially_hidden": initiallyHidden,
+        "menu_commands_present": menuBarController.hasRequiredCommands,
+        "monitoring_state": self.engine?.state.rawValue ?? "stopped",
+        "opened_from_menu_bar": openedFromMenuBar,
+        "status": status,
+        "status_item_installed": menuBarController.isInstalled,
+        "status_title": statusTitle,
+      ])
+      NSApplication.shared.terminate(nil)
+    }
+  }
+
   private func waitForHistoryScreen(deadline: Date) {
     guard Date() < deadline else {
       writeSmokeResult([
@@ -355,7 +474,7 @@ enum MemoryWatcherApp {
   @MainActor
   static func main() {
     let application = NSApplication.shared
-    application.setActivationPolicy(.regular)
+    application.setActivationPolicy(.accessory)
     let coordinator = MemoryWatcherApplicationCoordinator()
     self.coordinator = coordinator
     application.delegate = coordinator
