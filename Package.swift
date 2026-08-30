@@ -20,6 +20,10 @@ let package = Package(
       name: "MemoryWatcherProbe",
       targets: ["MemoryWatcherProbe"]
     ),
+    .executable(
+      name: "MemoryWatcherAudit",
+      targets: ["MemoryWatcherAudit"]
+    ),
   ],
   targets: [
     .systemLibrary(
@@ -35,6 +39,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "MemoryWatcherProbe",
+      dependencies: ["MemoryWatcherCore"]
+    ),
+    .executableTarget(
+      name: "MemoryWatcherAudit",
       dependencies: ["MemoryWatcherCore"]
     ),
     .testTarget(
