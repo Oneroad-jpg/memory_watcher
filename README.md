@@ -86,11 +86,13 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 完了: 工程9「メニューバー統合」
 - 完了: 工程10「24時間実運転」
 - 完了: 工程11「軽量性・非通信検証」
-- 次工程: 工程12「アプリ化・最終読戻し」
+- 完了: 工程12「アプリ化・最終読戻し」
+- v0.1完成
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
 - 工程11検証記録: [軽量性・非通信検証](docs/Phase_11_Verification.md)
+- 工程12検証記録: [アプリ化・最終読戻し](docs/Phase_12_Verification.md)
 
 ## 開発
 
@@ -100,6 +102,8 @@ swift test
 scripts/build-development-app.sh
 open .build/MemoryWatcher.app
 scripts/run-measurement-probe.sh 121
+scripts/build-release-app.sh 0.1.0 1
+scripts/install-release-app.sh 0.1.0
 ```
 
 外部パッケージには依存しません。Apple SDKとmacOS同梱SQLiteだけを
