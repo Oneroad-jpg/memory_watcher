@@ -6,12 +6,12 @@ enum HistoryUISmokeFixture {
     database: MemoryWatcherDatabase,
     now: Date
   ) throws {
-    let fiveMinutes: TimeInterval = 5 * 60
-    let start = now.addingTimeInterval(-30 * 24 * 60 * 60)
-    let sleepStartIndex = 4_320
-    let sleepEndIndex = sleepStartIndex + 24
+    let oneMinute: TimeInterval = 60
+    let start = now.addingTimeInterval(-3 * 24 * 60 * 60)
+    let sleepStartIndex = 2_160
+    let sleepEndIndex = sleepStartIndex + 120
 
-    let samples = (0..<8_640).compactMap { index -> MemorySample? in
+    let samples = (0..<4_320).compactMap { index -> MemorySample? in
       guard !(sleepStartIndex..<sleepEndIndex).contains(index) else {
         return nil
       }
@@ -19,8 +19,8 @@ enum HistoryUISmokeFixture {
       let used = 6_000_000_000 + dayPosition * 6_000_000
       let compressed = 350_000_000 + UInt64(index % 96) * 5_000_000
       return MemorySample(
-        timestampUTC: start.addingTimeInterval(Double(index) * fiveMinutes),
-        systemUptimeSeconds: 100_000 + Double(index) * fiveMinutes,
+        timestampUTC: start.addingTimeInterval(Double(index) * oneMinute),
+        systemUptimeSeconds: 100_000 + Double(index) * oneMinute,
         physicalMemoryBytes: 16_000_000_000,
         estimatedMemoryUsedBytes: used,
         wiredBytes: 1_200_000_000,
@@ -47,21 +47,21 @@ enum HistoryUISmokeFixture {
     try database.insert(samples: samples)
 
     let sleepStart = start.addingTimeInterval(
-      Double(sleepStartIndex) * fiveMinutes
+      Double(sleepStartIndex) * oneMinute
     )
     let sleepEnd = start.addingTimeInterval(
-      Double(sleepEndIndex) * fiveMinutes
+      Double(sleepEndIndex) * oneMinute
     )
     try database.insert(
       lifecycleEvents: [
         SystemLifecycleEvent(
           timestampUTC: sleepStart,
-          systemUptimeSeconds: 100_000 + Double(sleepStartIndex) * fiveMinutes,
+          systemUptimeSeconds: 100_000 + Double(sleepStartIndex) * oneMinute,
           kind: .sleep
         ),
         SystemLifecycleEvent(
           timestampUTC: sleepEnd,
-          systemUptimeSeconds: 100_000 + Double(sleepEndIndex) * fiveMinutes,
+          systemUptimeSeconds: 100_000 + Double(sleepEndIndex) * oneMinute,
           kind: .wake
         ),
       ]
@@ -70,18 +70,18 @@ enum HistoryUISmokeFixture {
       pressureObservations: [
         pressure(at: start, uptime: 100_000, level: .normal),
         pressure(
-          at: start.addingTimeInterval(10 * 24 * 60 * 60),
-          uptime: 964_000,
+          at: start.addingTimeInterval(24 * 60 * 60),
+          uptime: 186_400,
           level: .warning
         ),
         pressure(
-          at: start.addingTimeInterval(11 * 24 * 60 * 60),
-          uptime: 1_050_400,
+          at: start.addingTimeInterval(30 * 60 * 60),
+          uptime: 208_000,
           level: .critical
         ),
         pressure(
-          at: start.addingTimeInterval(12 * 24 * 60 * 60),
-          uptime: 1_136_800,
+          at: start.addingTimeInterval(36 * 60 * 60),
+          uptime: 229_600,
           level: .normal
         ),
       ]

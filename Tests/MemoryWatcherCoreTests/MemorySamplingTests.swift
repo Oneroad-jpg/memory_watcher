@@ -138,27 +138,38 @@ final class MemorySamplingTests: XCTestCase {
     XCTAssertEqual(sequence.callCount, 3)
   }
 
-  func testLiveSystemSampleIsWithinPhysicalBounds() throws {
-    let sample = try SystemMemorySampler().sample()
-
-    try MemorySampleValidator.validate(sample)
-    XCTAssertGreaterThan(sample.timestampUTC.timeIntervalSince1970, 0)
-    XCTAssertGreaterThan(sample.systemUptimeSeconds, 0)
-    XCTAssertGreaterThan(sample.physicalMemoryBytes, 0)
-    XCTAssertGreaterThan(sample.pageSizeBytes, 0)
-    XCTAssertLessThanOrEqual(
-      sample.estimatedMemoryUsedBytes,
-      sample.physicalMemoryBytes
-    )
-    XCTAssertLessThanOrEqual(sample.wiredBytes, sample.physicalMemoryBytes)
-    XCTAssertLessThanOrEqual(
-      sample.compressedBytes,
-      sample.physicalMemoryBytes
-    )
-    XCTAssertLessThanOrEqual(
-      sample.estimatedCachedFilesBytes,
-      sample.physicalMemoryBytes
-    )
+  func testLiveSystemOutcomeIsWithinDocumentedBounds() throws {
+    switch try SystemMemorySampler().sampleOutcome() {
+    case .sample(let sample):
+      try MemorySampleValidator.validate(sample)
+      XCTAssertGreaterThan(sample.timestampUTC.timeIntervalSince1970, 0)
+      XCTAssertGreaterThan(sample.systemUptimeSeconds, 0)
+      XCTAssertGreaterThan(sample.physicalMemoryBytes, 0)
+      XCTAssertGreaterThan(sample.pageSizeBytes, 0)
+      XCTAssertLessThanOrEqual(
+        sample.estimatedMemoryUsedBytes,
+        sample.physicalMemoryBytes
+      )
+      XCTAssertLessThanOrEqual(sample.wiredBytes, sample.physicalMemoryBytes)
+      XCTAssertLessThanOrEqual(
+        sample.compressedBytes,
+        sample.physicalMemoryBytes
+      )
+      XCTAssertLessThanOrEqual(
+        sample.estimatedCachedFilesBytes,
+        sample.physicalMemoryBytes
+      )
+    case .gap(let gap):
+      XCTAssertGreaterThan(gap.timestampUTC.timeIntervalSince1970, 0)
+      XCTAssertGreaterThan(gap.systemUptimeSeconds, 0)
+      XCTAssertEqual(
+        gap.acquisitionAttemptCount,
+        MemorySamplingRetryPolicy.phase03.maximumAttempts
+      )
+      XCTAssertGreaterThan(gap.lastInconsistency.physicalMemoryBytes, 0)
+      XCTAssertGreaterThan(gap.lastInconsistency.pageSizeBytes, 0)
+      XCTAssertGreaterThan(gap.lastInconsistency.excessBytes, 0)
+    }
   }
 
   func testMetricCatalogDistinguishesReportedAndEstimatedValues() {

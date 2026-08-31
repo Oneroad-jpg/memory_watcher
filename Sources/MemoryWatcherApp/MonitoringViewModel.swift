@@ -11,17 +11,10 @@ final class MonitoringViewModel: ObservableObject {
   @Published private(set) var lastLifecycleKind: SystemLifecycleEventKind?
   @Published private(set) var loginItemStatus: LoginItemRegistrationStatus
   @Published private(set) var errorMessage: String?
-  @Published private(set) var historyPeriod: MemoryHistoryPeriod =
-    .twentyFourHours
-  @Published private(set) var historySnapshot: MemoryHistorySnapshot?
-  @Published private(set) var historyIsLoading = false
-  @Published private(set) var historyLoadDurationSeconds: TimeInterval?
-  @Published private(set) var historyErrorMessage: String?
+
+  let history = HistoryViewModel()
 
   private let loginItemManager: LoginItemManager
-  private var historyLoader: MemoryHistoryLoader?
-  private var historyLoadTask: Task<Void, Never>?
-  private var lastAutomaticHistoryReloadAt: Date?
 
   init(loginItemManager: LoginItemManager = LoginItemManager()) {
     self.loginItemManager = loginItemManager
@@ -41,7 +34,7 @@ final class MonitoringViewModel: ObservableObject {
     case .sample(let sample):
       sampleCount += 1
       lastMemoryUsedBytes = sample.estimatedMemoryUsedBytes
-      scheduleAutomaticHistoryReload(now: sample.timestampUTC)
+      history.receiveSample(at: sample.timestampUTC)
     case .gap:
       gapCount += 1
     case .pressure(let observation):
@@ -58,8 +51,99 @@ final class MonitoringViewModel: ObservableObject {
     initialPeriod: MemoryHistoryPeriod = .twentyFourHours,
     now: Date = Date()
   ) {
+    history.configure(database: database, initialPeriod: initialPeriod, now: now)
+  }
+
+  var historyPeriod: MemoryHistoryPeriod {
+    history.historyPeriod
+  }
+
+  var historySnapshot: MemoryHistorySnapshot? {
+    history.historySnapshot
+  }
+
+  var historyIsLoading: Bool {
+    history.historyIsLoading
+  }
+
+  var historyLoadDurationSeconds: TimeInterval? {
+    history.historyLoadDurationSeconds
+  }
+
+  func setLoginItemEnabled(_ enabled: Bool) {
+    do {
+      loginItemStatus = try loginItemManager.setEnabled(enabled)
+      errorMessage = nil
+    } catch {
+      loginItemStatus = loginItemManager.status
+      errorMessage = String(describing: error)
+    }
+  }
+
+  func refreshLoginItemStatus() {
+    loginItemStatus = loginItemManager.status
+  }
+
+  func openLoginItemSettings() {
+    loginItemManager.openSystemSettings()
+  }
+
+  func reportStartupFailure(_ error: Error) {
+    errorMessage = String(describing: error)
+    runState = .stopped
+  }
+}
+
+@MainActor
+final class HistoryViewModel: ObservableObject {
+  @Published private(set) var historyPeriod: MemoryHistoryPeriod =
+    .twentyFourHours
+  @Published private(set) var historySnapshot: MemoryHistorySnapshot?
+  @Published private(set) var historyIsLoading = false
+  @Published private(set) var historyLoadDurationSeconds: TimeInterval?
+  @Published private(set) var historyErrorMessage: String?
+
+  private let refreshPolicy = MemoryHistoryRefreshPolicy()
+  private var historyLoader: MemoryHistoryLoader?
+  private var historyLoadTask: Task<Void, Never>?
+  private var lastReloadAt: Date?
+  private var windowIsVisible = false
+
+  func configure(
+    database: MemoryWatcherDatabase,
+    initialPeriod: MemoryHistoryPeriod = .twentyFourHours,
+    now: Date = Date()
+  ) {
     historyLoader = MemoryHistoryLoader(database: database)
     historyPeriod = initialPeriod
+    reloadHistory(now: now)
+  }
+
+  func setWindowVisible(_ visible: Bool, now: Date = Date()) {
+    windowIsVisible = visible
+    guard visible else {
+      return
+    }
+    if let lastReloadAt,
+      now.timeIntervalSince(lastReloadAt) < 15
+    {
+      return
+    }
+    reloadHistory(now: now)
+  }
+
+  func receiveSample(at now: Date) {
+    guard
+      refreshPolicy.shouldAutomaticallyReload(
+        period: historyPeriod,
+        isWindowVisible: windowIsVisible,
+        isLoading: historyIsLoading,
+        lastReloadAt: lastReloadAt,
+        now: now
+      )
+    else {
+      return
+    }
     reloadHistory(now: now)
   }
 
@@ -96,7 +180,7 @@ final class MonitoringViewModel: ObservableObject {
         self.historySnapshot = loaded.0
         self.historyLoadDurationSeconds = loaded.1
         self.historyIsLoading = false
-        self.lastAutomaticHistoryReloadAt = now
+        self.lastReloadAt = now
       } catch is CancellationError {
         return
       } catch {
@@ -135,40 +219,5 @@ final class MonitoringViewModel: ObservableObject {
       <= after.timestampUTC.timeIntervalSince(date)
       ? before
       : after
-  }
-
-  private func scheduleAutomaticHistoryReload(now: Date) {
-    guard historyPeriod == .twentyFourHours else {
-      return
-    }
-    if let lastAutomaticHistoryReloadAt,
-      now.timeIntervalSince(lastAutomaticHistoryReloadAt) < 15
-    {
-      return
-    }
-    reloadHistory(now: now)
-  }
-
-  func setLoginItemEnabled(_ enabled: Bool) {
-    do {
-      loginItemStatus = try loginItemManager.setEnabled(enabled)
-      errorMessage = nil
-    } catch {
-      loginItemStatus = loginItemManager.status
-      errorMessage = String(describing: error)
-    }
-  }
-
-  func refreshLoginItemStatus() {
-    loginItemStatus = loginItemManager.status
-  }
-
-  func openLoginItemSettings() {
-    loginItemManager.openSystemSettings()
-  }
-
-  func reportStartupFailure(_ error: Error) {
-    errorMessage = String(describing: error)
-    runState = .stopped
   }
 }

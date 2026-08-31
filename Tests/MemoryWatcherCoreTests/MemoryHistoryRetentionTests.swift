@@ -97,11 +97,11 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     )
   }
 
-  func testThirtyOneDayDataHonorsEveryRetentionBoundary() throws {
+  func testFourDayDataHonorsEveryRetentionBoundary() throws {
     let database = try makeDatabase()
     let day: TimeInterval = 24 * 60 * 60
     let now = Date(timeIntervalSince1970: 40 * day)
-    let samples = (0...31).map { ageInDays in
+    let samples = (0...4).map { ageInDays in
       sample(
         at: now.addingTimeInterval(-Double(ageInDays) * day),
         value: UInt64(ageInDays)
@@ -109,8 +109,8 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     }
     try database.insert(samples: samples)
 
-    let expiredDate = now.addingTimeInterval(-31 * day)
-    let boundaryDate = now.addingTimeInterval(-30 * day)
+    let expiredDate = now.addingTimeInterval(-4 * day)
+    let boundaryDate = now.addingTimeInterval(-3 * day)
     try database.insert(
       pressureObservations: [
         pressure(at: expiredDate, uptime: 1, level: .warning),
@@ -138,11 +138,11 @@ final class MemoryHistoryRetentionTests: XCTestCase {
         now.addingTimeInterval(-day),
         now,
       ])
-    XCTAssertEqual(try database.aggregateCount(resolution: .oneMinute), 7)
-    XCTAssertEqual(try database.aggregateCount(resolution: .fiveMinutes), 30)
+    XCTAssertEqual(try database.aggregateCount(resolution: .oneMinute), 3)
+    XCTAssertEqual(try database.aggregateCount(resolution: .fiveMinutes), 3)
     XCTAssertEqual(
       try database.fetchAggregates(resolution: .oneMinute).first?.bucketStartUTC,
-      now.addingTimeInterval(-7 * day)
+      boundaryDate
     )
     XCTAssertEqual(
       try database.fetchAggregates(resolution: .fiveMinutes).first?.bucketStartUTC,
@@ -207,11 +207,11 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     XCTAssertEqual(MemoryHistoryRetentionPolicy.rawSampleRetention, 24 * 60 * 60)
     XCTAssertEqual(
       MemoryHistoryRetentionPolicy.oneMinuteRetention,
-      7 * 24 * 60 * 60
+      3 * 24 * 60 * 60
     )
     XCTAssertEqual(
       MemoryHistoryRetentionPolicy.fiveMinuteRetention,
-      30 * 24 * 60 * 60
+      3 * 24 * 60 * 60
     )
   }
 
