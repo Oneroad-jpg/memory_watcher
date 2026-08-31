@@ -4,14 +4,56 @@ import XCTest
 @testable import MemoryWatcherCore
 
 final class MemoryHistoryLoaderTests: XCTestCase {
+  func testAutomaticRefreshRequiresVisibleWindowAndFiveMinuteInterval() {
+    let policy = MemoryHistoryRefreshPolicy()
+    let now = Date(timeIntervalSince1970: 200_000)
+
+    XCTAssertFalse(
+      policy.shouldAutomaticallyReload(
+        period: .twentyFourHours,
+        isWindowVisible: false,
+        isLoading: false,
+        lastReloadAt: now.addingTimeInterval(-600),
+        now: now
+      )
+    )
+    XCTAssertFalse(
+      policy.shouldAutomaticallyReload(
+        period: .twentyFourHours,
+        isWindowVisible: true,
+        isLoading: false,
+        lastReloadAt: now.addingTimeInterval(-299),
+        now: now
+      )
+    )
+    XCTAssertTrue(
+      policy.shouldAutomaticallyReload(
+        period: .twelveHours,
+        isWindowVisible: true,
+        isLoading: false,
+        lastReloadAt: now.addingTimeInterval(-300),
+        now: now
+      )
+    )
+    XCTAssertFalse(
+      policy.shouldAutomaticallyReload(
+        period: .threeDays,
+        isWindowVisible: true,
+        isLoading: false,
+        lastReloadAt: now.addingTimeInterval(-600),
+        now: now
+      )
+    )
+  }
+
   func testEachPeriodUsesItsRequiredStorageResolution() throws {
     let database = try makeDatabase()
     let day: TimeInterval = 24 * 60 * 60
     let now = Date(timeIntervalSince1970: 40 * day)
     let dates = [
-      now.addingTimeInterval(-29 * day),
-      now.addingTimeInterval(-6 * day),
+      now.addingTimeInterval(-2.5 * day),
       now.addingTimeInterval(-23 * 60 * 60),
+      now.addingTimeInterval(-11 * 60 * 60),
       now.addingTimeInterval(-5 * 60),
     ]
     try database.insert(
@@ -22,16 +64,19 @@ final class MemoryHistoryLoaderTests: XCTestCase {
     _ = try database.performHistoryMaintenance(now: now)
     let loader = MemoryHistoryLoader(database: database)
 
+    let twelveHourSnapshot = try loader.load(period: .twelveHours, now: now)
     let daySnapshot = try loader.load(period: .twentyFourHours, now: now)
-    let weekSnapshot = try loader.load(period: .sevenDays, now: now)
-    let monthSnapshot = try loader.load(period: .thirtyDays, now: now)
+    let threeDaySnapshot = try loader.load(period: .threeDays, now: now)
 
-    XCTAssertEqual(daySnapshot.points.map(\.timestampUTC), Array(dates.suffix(2)))
+    XCTAssertEqual(
+      twelveHourSnapshot.points.map(\.timestampUTC),
+      Array(dates.suffix(2))
+    )
+    XCTAssertEqual(Set(twelveHourSnapshot.points.map(\.source)), [.raw])
+    XCTAssertEqual(daySnapshot.points.map(\.timestampUTC), Array(dates.suffix(3)))
     XCTAssertEqual(Set(daySnapshot.points.map(\.source)), [.raw])
-    XCTAssertEqual(weekSnapshot.points.map(\.timestampUTC), Array(dates.suffix(3)))
-    XCTAssertEqual(Set(weekSnapshot.points.map(\.source)), [.oneMinute])
-    XCTAssertEqual(monthSnapshot.points.map(\.timestampUTC), dates)
-    XCTAssertEqual(Set(monthSnapshot.points.map(\.source)), [.fiveMinutes])
+    XCTAssertEqual(threeDaySnapshot.points.map(\.timestampUTC), dates)
+    XCTAssertEqual(Set(threeDaySnapshot.points.map(\.source)), [.oneMinute])
   }
 
   func testLifecycleGapAndLongIntervalCreateSeparateContinuitySegments() throws {
@@ -121,13 +166,13 @@ final class MemoryHistoryLoaderTests: XCTestCase {
       ])
   }
 
-  func testThirtyDaySnapshotWithEightThousandSixHundredFortyPointsLoadsUnderTwoSeconds() throws {
+  func testThreeDaySnapshotWithFourThousandThreeHundredTwentyPointsLoadsUnderTwoSeconds() throws {
     let database = try makeDatabase()
     let now = Date(timeIntervalSince1970: 40 * 24 * 60 * 60)
-    let start = now.addingTimeInterval(-30 * 24 * 60 * 60)
-    let samples = (0..<8_640).map { index in
+    let start = now.addingTimeInterval(-3 * 24 * 60 * 60)
+    let samples = (0..<4_320).map { index in
       sample(
-        at: start.addingTimeInterval(Double(index) * 5 * 60),
+        at: start.addingTimeInterval(Double(index) * 60),
         value: UInt64(index % 1_000)
       )
     }
@@ -136,13 +181,13 @@ final class MemoryHistoryLoaderTests: XCTestCase {
 
     let startedAt = Date()
     let snapshot = try MemoryHistoryLoader(database: database).load(
-      period: .thirtyDays,
+      period: .threeDays,
       now: now
     )
     let elapsed = Date().timeIntervalSince(startedAt)
 
-    XCTAssertEqual(snapshot.points.count, 8_640)
-    XCTAssertEqual(Set(snapshot.points.map(\.source)), [.fiveMinutes])
+    XCTAssertEqual(snapshot.points.count, 4_320)
+    XCTAssertEqual(Set(snapshot.points.map(\.source)), [.oneMinute])
     XCTAssertLessThan(elapsed, 2)
   }
 

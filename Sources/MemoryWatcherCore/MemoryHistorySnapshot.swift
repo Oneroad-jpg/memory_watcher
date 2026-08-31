@@ -1,42 +1,40 @@
 import Foundation
 
 public enum MemoryHistoryPeriod: String, CaseIterable, Identifiable, Sendable {
+  case twelveHours
   case twentyFourHours
-  case sevenDays
-  case thirtyDays
+  case threeDays
 
   public var id: String { rawValue }
 
   public var displayName: String {
     switch self {
+    case .twelveHours:
+      return "12時間"
     case .twentyFourHours:
       return "24時間"
-    case .sevenDays:
-      return "7日"
-    case .thirtyDays:
-      return "30日"
+    case .threeDays:
+      return "3日"
     }
   }
 
   public var duration: TimeInterval {
     switch self {
+    case .twelveHours:
+      return 12 * 60 * 60
     case .twentyFourHours:
       return 24 * 60 * 60
-    case .sevenDays:
-      return 7 * 24 * 60 * 60
-    case .thirtyDays:
-      return 30 * 24 * 60 * 60
+    case .threeDays:
+      return 3 * 24 * 60 * 60
     }
   }
 
   public var expectedPointInterval: TimeInterval {
     switch self {
-    case .twentyFourHours:
+    case .twelveHours, .twentyFourHours:
       return MemoryWatcherFoundation.sampleInterval
-    case .sevenDays:
+    case .threeDays:
       return MemoryHistoryResolution.oneMinute.bucketDuration
-    case .thirtyDays:
-      return MemoryHistoryResolution.fiveMinutes.bucketDuration
     }
   }
 }
@@ -182,7 +180,7 @@ public struct MemoryHistoryLoader: Sendable {
     period: MemoryHistoryPeriod
   ) throws -> [UnsegmentedHistoryValue] {
     switch period {
-    case .twentyFourHours:
+    case .twelveHours, .twentyFourHours:
       return try database.fetchSamples().map { sample in
         UnsegmentedHistoryValue(
           timestampUTC: sample.timestampUTC,
@@ -198,10 +196,8 @@ public struct MemoryHistoryLoader: Sendable {
           swapUsedBytes: Double(sample.swapUsedBytes)
         )
       }
-    case .sevenDays:
+    case .threeDays:
       return try aggregateValues(resolution: .oneMinute, source: .oneMinute)
-    case .thirtyDays:
-      return try aggregateValues(resolution: .fiveMinutes, source: .fiveMinutes)
     }
   }
 
@@ -352,6 +348,32 @@ public struct MemoryHistoryLoader: Sendable {
       }
     }
     return intervals
+  }
+}
+
+public struct MemoryHistoryRefreshPolicy: Equatable, Sendable {
+  public static let automaticReloadInterval: TimeInterval = 5 * 60
+
+  public init() {}
+
+  public func shouldAutomaticallyReload(
+    period: MemoryHistoryPeriod,
+    isWindowVisible: Bool,
+    isLoading: Bool,
+    lastReloadAt: Date?,
+    now: Date
+  ) -> Bool {
+    guard
+      period == .twelveHours || period == .twentyFourHours,
+      isWindowVisible,
+      !isLoading
+    else {
+      return false
+    }
+    guard let lastReloadAt else {
+      return true
+    }
+    return now.timeIntervalSince(lastReloadAt) >= Self.automaticReloadInterval
   }
 }
 

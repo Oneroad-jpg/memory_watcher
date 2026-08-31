@@ -1169,9 +1169,9 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   private static let rawRetentionMicroseconds: Int64 =
     24 * 60 * oneMinuteMicroseconds
   private static let oneMinuteRetentionMicroseconds: Int64 =
-    7 * 24 * 60 * oneMinuteMicroseconds
+    3 * 24 * 60 * oneMinuteMicroseconds
   private static let fiveMinuteRetentionMicroseconds: Int64 =
-    30 * 24 * 60 * oneMinuteMicroseconds
+    3 * 24 * 60 * oneMinuteMicroseconds
 
   private static func upsertOneMinuteAggregatesSQL(
     completedBefore: Int64

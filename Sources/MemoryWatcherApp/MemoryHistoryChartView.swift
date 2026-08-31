@@ -3,7 +3,7 @@ import MemoryWatcherCore
 import SwiftUI
 
 struct MemoryHistoryChartView: View {
-  @ObservedObject var viewModel: MonitoringViewModel
+  @ObservedObject var viewModel: HistoryViewModel
   @State private var selectedDate: Date?
 
   private let gigabyte = 1_000_000_000.0
@@ -79,7 +79,7 @@ struct MemoryHistoryChartView: View {
 
   @ViewBuilder
   private func charts(snapshot: MemoryHistorySnapshot) -> some View {
-    let points = displayPoints(snapshot.points, limit: 1_200)
+    let points = displayPoints(snapshot.points, limit: 600)
     let selectedPoint =
       selectedDate.flatMap {
         viewModel.nearestHistoryPoint(to: $0)
@@ -327,9 +327,9 @@ struct MemoryHistoryChartView: View {
 
   private func axisLabel(_ date: Date, period: MemoryHistoryPeriod) -> String {
     switch period {
-    case .twentyFourHours:
+    case .twelveHours, .twentyFourHours:
       return date.formatted(.dateTime.hour().minute())
-    case .sevenDays, .thirtyDays:
+    case .threeDays:
       return date.formatted(.dateTime.month().day())
     }
   }

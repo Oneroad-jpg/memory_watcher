@@ -5,7 +5,7 @@ import SwiftUI
 
 @MainActor
 private final class MemoryWatcherApplicationCoordinator: NSObject,
-  NSApplicationDelegate
+  NSApplicationDelegate, NSWindowDelegate
 {
   private let arguments = Array(CommandLine.arguments.dropFirst())
   private let viewModel = MonitoringViewModel()
@@ -99,7 +99,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       let startedAt = Date()
       viewModel.configureHistory(
         database: database,
-        initialPeriod: isHistoryUITest ? .thirtyDays : .twentyFourHours,
+        initialPeriod: isHistoryUITest ? .threeDays : .twentyFourHours,
         now: historyReferenceDate ?? Date()
       )
       historyScreenStartedAt = startedAt
@@ -144,6 +144,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     window.contentView = contentView
     window.title = "Memory Watcher"
     window.isReleasedWhenClosed = false
+    window.delegate = self
     self.window = window
   }
 
@@ -183,6 +184,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     guard let window else {
       return
     }
+    viewModel.history.setWindowVisible(true)
     NSApplication.shared.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
@@ -193,10 +195,15 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       return
     }
     if window.isVisible {
+      viewModel.history.setWindowVisible(false)
       window.orderOut(nil)
     } else {
       showHistoryWindow()
     }
+  }
+
+  func windowWillClose(_ notification: Notification) {
+    viewModel.history.setWindowVisible(false)
   }
 
   private func observeSystemLifecycle() {
@@ -416,7 +423,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     }
     guard
       let snapshot = viewModel.historySnapshot,
-      snapshot.period == .thirtyDays,
+      snapshot.period == .threeDays,
       !viewModel.historyIsLoading,
       let loadDuration = viewModel.historyLoadDurationSeconds,
       let startedAt = historyScreenStartedAt,
@@ -435,7 +442,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       }
       let readyDuration = Date().timeIntervalSince(startedAt)
       let status =
-        snapshot.points.count >= 8_000
+        snapshot.points.count >= 4_000
           && loadDuration < 2
           && readyDuration < 2
           && window.isVisible

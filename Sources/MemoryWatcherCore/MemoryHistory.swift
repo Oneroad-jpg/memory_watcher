@@ -50,8 +50,8 @@ public struct MemoryHistoryAggregate: Equatable, Sendable {
 
 public enum MemoryHistoryRetentionPolicy {
   public static let rawSampleRetention: TimeInterval = 24 * 60 * 60
-  public static let oneMinuteRetention: TimeInterval = 7 * 24 * 60 * 60
-  public static let fiveMinuteRetention: TimeInterval = 30 * 24 * 60 * 60
+  public static let oneMinuteRetention: TimeInterval = 3 * 24 * 60 * 60
+  public static let fiveMinuteRetention: TimeInterval = 3 * 24 * 60 * 60
   public static let maintenanceInterval: TimeInterval = 60 * 60
 }
 
