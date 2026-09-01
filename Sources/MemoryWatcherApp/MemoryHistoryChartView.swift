@@ -46,7 +46,10 @@ struct MemoryHistoryChartView: View {
       if let snapshot = viewModel.historySnapshot,
         snapshot.period == viewModel.historyPeriod
       {
-        if snapshot.points.isEmpty {
+        if snapshot.points.isEmpty
+          && snapshot.cpuHistory.totalPoints.isEmpty
+          && snapshot.cpuHistory.logicalPoints.isEmpty
+        {
           emptyHistoryView
         } else {
           charts(snapshot: snapshot)
@@ -220,6 +223,12 @@ struct MemoryHistoryChartView: View {
       if let selectedPoint {
         selectedPointDetails(selectedPoint)
       }
+
+      CPUHistoryChartSection(
+        viewModel: viewModel,
+        snapshot: snapshot,
+        selectedDate: $selectedDate
+      )
     }
     .overlay(alignment: .topTrailing) {
       if viewModel.historyIsLoading {

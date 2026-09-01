@@ -488,7 +488,10 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
           operation: "delete expired system lifecycle events"
         )
         let totalCPURawSamplesDeleted = try executeReturningChanges(
-          Self.deleteTotalCPURawSamplesSQL(olderThan: rawCutoff),
+          Self.deleteTotalCPURawSamplesSQL(
+            measuredOlderThan: rawCutoff,
+            unknownOlderThan: fiveMinuteCutoff
+          ),
           operation: "delete aggregated total CPU samples"
         )
         let totalCPUOneMinuteBucketsDeleted = try executeReturningChanges(
@@ -504,7 +507,10 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
           operation: "delete expired five-minute total CPU aggregates"
         )
         let logicalCPURawSamplesDeleted = try executeReturningChanges(
-          Self.deleteLogicalCPURawSamplesSQL(olderThan: rawCutoff),
+          Self.deleteLogicalCPURawSamplesSQL(
+            measuredOlderThan: rawCutoff,
+            unknownOlderThan: fiveMinuteCutoff
+          ),
           operation: "delete aggregated logical CPU samples"
         )
         let logicalCPUGapsDeleted = try executeReturningChanges(
@@ -1785,20 +1791,25 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   }
 
   private static func deleteTotalCPURawSamplesSQL(
-    olderThan cutoff: Int64
+    measuredOlderThan rawCutoff: Int64,
+    unknownOlderThan unknownCutoff: Int64
   ) -> String {
     """
     DELETE FROM total_cpu_samples
-    WHERE interval_end_utc_microseconds < \(cutoff)
-      AND (
-        quality != 'measured'
-        OR EXISTS(
+    WHERE (
+        quality = 'measured'
+        AND interval_end_utc_microseconds < \(rawCutoff)
+        AND EXISTS(
           SELECT 1
           FROM total_cpu_aggregates_1m
           WHERE bucket_start_utc_microseconds =
             (total_cpu_samples.interval_end_utc_microseconds - 1)
               / \(oneMinuteMicroseconds) * \(oneMinuteMicroseconds)
         )
+      )
+      OR (
+        quality != 'measured'
+        AND interval_end_utc_microseconds < \(unknownCutoff)
       )
     """
   }
@@ -2286,6 +2297,65 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
 }
 
 extension MemoryWatcherDatabase {
+  public func fetchTotalCPUSamples(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> [TotalCPUSample] {
+    try fetchTotalCPUSamples(
+      from: startUTC,
+      through: endUTC,
+      unknownOnly: false
+    )
+  }
+
+  public func fetchTotalCPUUnknownSamples(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> [TotalCPUSample] {
+    try fetchTotalCPUSamples(
+      from: startUTC,
+      through: endUTC,
+      unknownOnly: true
+    )
+  }
+
+  public func fetchTotalCPUAggregates(
+    resolution: MemoryHistoryResolution,
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> [TotalCPUHistoryAggregate] {
+    try locked {
+      let statement = try prepare(
+        selectTotalCPUAggregatesInRangeSQL(for: resolution),
+        operation: "prepare ranged total CPU aggregate read"
+      )
+      defer { sqlite3_finalize(statement) }
+      try bindDateRange(
+        startUTC: startUTC,
+        endUTC: endUTC,
+        to: statement,
+        field: "total CPU aggregate range"
+      )
+      var aggregates: [TotalCPUHistoryAggregate] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return aggregates }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read ranged total CPU aggregates",
+            code: code
+          )
+        }
+        aggregates.append(
+          try decodeTotalCPUAggregate(
+            from: statement,
+            resolution: resolution
+          )
+        )
+      }
+    }
+  }
+
   public func insert(logicalCPUSamples: [LogicalCPUSample]) throws {
     guard !logicalCPUSamples.isEmpty else { return }
     try LogicalCPUSampleValidator.validate(batch: logicalCPUSamples)
@@ -2373,6 +2443,28 @@ extension MemoryWatcherDatabase {
     }
   }
 
+  public func fetchLogicalCPUSamples(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> [LogicalCPUSample] {
+    try fetchLogicalCPUSamples(
+      from: startUTC,
+      through: endUTC,
+      unknownOnly: false
+    )
+  }
+
+  public func fetchLogicalCPUUnknownSamples(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> [LogicalCPUSample] {
+    try fetchLogicalCPUSamples(
+      from: startUTC,
+      through: endUTC,
+      unknownOnly: true
+    )
+  }
+
   public func fetchLogicalCPUSamplingGaps() throws
     -> [LogicalCPUSamplingGap]
   {
@@ -2389,6 +2481,37 @@ extension MemoryWatcherDatabase {
         guard code == SQLITE_ROW else {
           throw sqliteError(
             operation: "read logical CPU sampling gaps",
+            code: code
+          )
+        }
+        gaps.append(try decodeLogicalCPUGap(from: statement))
+      }
+    }
+  }
+
+  public func fetchLogicalCPUSamplingGaps(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> [LogicalCPUSamplingGap] {
+    try locked {
+      let statement = try prepare(
+        Self.selectLogicalCPUGapsInRangeSQL,
+        operation: "prepare ranged logical CPU sampling gap read"
+      )
+      defer { sqlite3_finalize(statement) }
+      try bindDateRange(
+        startUTC: startUTC,
+        endUTC: endUTC,
+        to: statement,
+        field: "logical CPU gap range"
+      )
+      var gaps: [LogicalCPUSamplingGap] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return gaps }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read ranged logical CPU sampling gaps",
             code: code
           )
         }
@@ -2424,6 +2547,134 @@ extension MemoryWatcherDatabase {
         )
       }
     }
+  }
+
+  public func fetchLogicalCPUAggregates(
+    resolution: MemoryHistoryResolution,
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> [LogicalCPUHistoryAggregate] {
+    try locked {
+      let statement = try prepare(
+        selectLogicalCPUAggregatesInRangeSQL(for: resolution),
+        operation: "prepare ranged logical CPU aggregate read"
+      )
+      defer { sqlite3_finalize(statement) }
+      try bindDateRange(
+        startUTC: startUTC,
+        endUTC: endUTC,
+        to: statement,
+        field: "logical CPU aggregate range"
+      )
+      var aggregates: [LogicalCPUHistoryAggregate] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return aggregates }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read ranged logical CPU aggregates",
+            code: code
+          )
+        }
+        aggregates.append(
+          try decodeLogicalCPUAggregate(
+            from: statement,
+            resolution: resolution
+          )
+        )
+      }
+    }
+  }
+
+  private func fetchTotalCPUSamples(
+    from startUTC: Date,
+    through endUTC: Date,
+    unknownOnly: Bool
+  ) throws -> [TotalCPUSample] {
+    try locked {
+      let statement = try prepare(
+        unknownOnly
+          ? Self.selectTotalCPUUnknownSamplesInRangeSQL
+          : Self.selectTotalCPUSamplesInRangeSQL,
+        operation: "prepare ranged total CPU sample read"
+      )
+      defer { sqlite3_finalize(statement) }
+      try bindDateRange(
+        startUTC: startUTC,
+        endUTC: endUTC,
+        to: statement,
+        field: "total CPU sample range"
+      )
+      var samples: [TotalCPUSample] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return samples }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read ranged total CPU samples",
+            code: code
+          )
+        }
+        samples.append(try decodeTotalCPUSample(from: statement))
+      }
+    }
+  }
+
+  private func fetchLogicalCPUSamples(
+    from startUTC: Date,
+    through endUTC: Date,
+    unknownOnly: Bool
+  ) throws -> [LogicalCPUSample] {
+    try locked {
+      let statement = try prepare(
+        unknownOnly
+          ? Self.selectLogicalCPUUnknownSamplesInRangeSQL
+          : Self.selectLogicalCPUSamplesInRangeSQL,
+        operation: "prepare ranged logical CPU sample read"
+      )
+      defer { sqlite3_finalize(statement) }
+      try bindDateRange(
+        startUTC: startUTC,
+        endUTC: endUTC,
+        to: statement,
+        field: "logical CPU sample range"
+      )
+      var samples: [LogicalCPUSample] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return samples }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read ranged logical CPU samples",
+            code: code
+          )
+        }
+        samples.append(try decodeLogicalCPUSample(from: statement))
+      }
+    }
+  }
+
+  private func bindDateRange(
+    startUTC: Date,
+    endUTC: Date,
+    to statement: OpaquePointer,
+    field: String
+  ) throws {
+    guard startUTC <= endUTC else {
+      throw MemoryWatcherDatabaseError.invalidValue(field: field)
+    }
+    try bind(
+      Self.microseconds(since1970: startUTC, field: "\(field) start"),
+      at: 1,
+      to: statement,
+      operation: "bind \(field) start"
+    )
+    try bind(
+      Self.microseconds(since1970: endUTC, field: "\(field) end"),
+      at: 2,
+      to: statement,
+      operation: "bind \(field) end"
+    )
   }
 
   private func ensureTopology(_ topology: LogicalCPUTopology) throws -> Int64 {
@@ -2657,6 +2908,57 @@ extension MemoryWatcherDatabase {
     """
   }
 
+  private func selectTotalCPUAggregatesInRangeSQL(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    """
+    SELECT
+      bucket_start_utc_microseconds,
+      sample_count,
+      summed_user_ticks,
+      summed_system_ticks,
+      summed_idle_ticks,
+      summed_nice_ticks,
+      summed_busy_ticks,
+      summed_total_ticks,
+      calculation_version
+    FROM \(totalCPUAggregateTable(for: resolution))
+    WHERE bucket_start_utc_microseconds >= ?
+      AND bucket_start_utc_microseconds <= ?
+    ORDER BY bucket_start_utc_microseconds
+    """
+  }
+
+  private func selectLogicalCPUAggregatesInRangeSQL(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    """
+    SELECT
+      topology.epoch_key,
+      topology.boot_session_start_utc_microseconds,
+      topology.logical_cpu_count,
+      aggregate.cpu_index,
+      aggregate.bucket_start_utc_microseconds,
+      aggregate.sample_count,
+      aggregate.summed_user_ticks,
+      aggregate.summed_system_ticks,
+      aggregate.summed_idle_ticks,
+      aggregate.summed_nice_ticks,
+      aggregate.summed_busy_ticks,
+      aggregate.summed_total_ticks,
+      aggregate.calculation_version
+    FROM \(logicalCPUAggregateTable(for: resolution)) AS aggregate
+    JOIN logical_cpu_topologies AS topology
+      ON topology.id = aggregate.topology_id
+    WHERE aggregate.bucket_start_utc_microseconds >= ?
+      AND aggregate.bucket_start_utc_microseconds <= ?
+    ORDER BY
+      aggregate.bucket_start_utc_microseconds,
+      topology.id,
+      aggregate.cpu_index
+    """
+  }
+
   private func decodeLogicalCPUSample(
     from statement: OpaquePointer
   ) throws -> LogicalCPUSample {
@@ -2852,6 +3154,47 @@ extension MemoryWatcherDatabase {
 }
 
 extension MemoryWatcherDatabase {
+  private static let selectTotalCPUSamplesInRangeSQL = """
+    SELECT
+      interval_start_utc_microseconds,
+      interval_end_utc_microseconds,
+      interval_start_uptime_microseconds,
+      interval_end_uptime_microseconds,
+      user_ticks,
+      system_ticks,
+      idle_ticks,
+      nice_ticks,
+      busy_ticks,
+      total_ticks,
+      calculation_version,
+      quality
+    FROM total_cpu_samples
+    WHERE interval_end_utc_microseconds >= ?
+      AND interval_end_utc_microseconds <= ?
+    ORDER BY interval_end_utc_microseconds, interval_end_uptime_microseconds
+    """
+
+  private static let selectTotalCPUUnknownSamplesInRangeSQL = """
+    SELECT
+      interval_start_utc_microseconds,
+      interval_end_utc_microseconds,
+      interval_start_uptime_microseconds,
+      interval_end_uptime_microseconds,
+      user_ticks,
+      system_ticks,
+      idle_ticks,
+      nice_ticks,
+      busy_ticks,
+      total_ticks,
+      calculation_version,
+      quality
+    FROM total_cpu_samples
+    WHERE interval_end_utc_microseconds >= ?
+      AND interval_end_utc_microseconds <= ?
+      AND quality != 'measured'
+    ORDER BY interval_end_utc_microseconds, interval_end_uptime_microseconds
+    """
+
   private static let insertLogicalCPUTopologySQL = """
     INSERT INTO logical_cpu_topologies(
       epoch_key,
@@ -2923,6 +3266,67 @@ extension MemoryWatcherDatabase {
       sample.cpu_index
     """
 
+  private static let selectLogicalCPUSamplesInRangeSQL = """
+    SELECT
+      topology.epoch_key,
+      topology.boot_session_start_utc_microseconds,
+      topology.logical_cpu_count,
+      sample.cpu_index,
+      sample.interval_start_utc_microseconds,
+      sample.interval_end_utc_microseconds,
+      sample.interval_start_uptime_microseconds,
+      sample.interval_end_uptime_microseconds,
+      sample.user_ticks,
+      sample.system_ticks,
+      sample.idle_ticks,
+      sample.nice_ticks,
+      sample.busy_ticks,
+      sample.total_ticks,
+      sample.calculation_version,
+      sample.quality
+    FROM logical_cpu_samples AS sample
+    JOIN logical_cpu_topologies AS topology
+      ON topology.id = sample.topology_id
+    WHERE sample.interval_end_utc_microseconds >= ?
+      AND sample.interval_end_utc_microseconds <= ?
+    ORDER BY
+      sample.interval_end_utc_microseconds,
+      sample.interval_end_uptime_microseconds,
+      topology.id,
+      sample.cpu_index
+    """
+
+  private static let selectLogicalCPUUnknownSamplesInRangeSQL = """
+    SELECT
+      topology.epoch_key,
+      topology.boot_session_start_utc_microseconds,
+      topology.logical_cpu_count,
+      sample.cpu_index,
+      sample.interval_start_utc_microseconds,
+      sample.interval_end_utc_microseconds,
+      sample.interval_start_uptime_microseconds,
+      sample.interval_end_uptime_microseconds,
+      sample.user_ticks,
+      sample.system_ticks,
+      sample.idle_ticks,
+      sample.nice_ticks,
+      sample.busy_ticks,
+      sample.total_ticks,
+      sample.calculation_version,
+      sample.quality
+    FROM logical_cpu_samples AS sample
+    JOIN logical_cpu_topologies AS topology
+      ON topology.id = sample.topology_id
+    WHERE sample.interval_end_utc_microseconds >= ?
+      AND sample.interval_end_utc_microseconds <= ?
+      AND sample.quality != 'measured'
+    ORDER BY
+      sample.interval_end_utc_microseconds,
+      sample.interval_end_uptime_microseconds,
+      topology.id,
+      sample.cpu_index
+    """
+
   private static let selectLogicalCPUGapsSQL = """
     SELECT
       gap.timestamp_utc_microseconds,
@@ -2934,6 +3338,22 @@ extension MemoryWatcherDatabase {
     FROM logical_cpu_sampling_gaps AS gap
     LEFT JOIN logical_cpu_topologies AS topology
       ON topology.id = gap.previous_topology_id
+    ORDER BY gap.timestamp_utc_microseconds, gap.system_uptime_microseconds
+    """
+
+  private static let selectLogicalCPUGapsInRangeSQL = """
+    SELECT
+      gap.timestamp_utc_microseconds,
+      gap.system_uptime_microseconds,
+      gap.quality,
+      topology.epoch_key,
+      topology.boot_session_start_utc_microseconds,
+      topology.logical_cpu_count
+    FROM logical_cpu_sampling_gaps AS gap
+    LEFT JOIN logical_cpu_topologies AS topology
+      ON topology.id = gap.previous_topology_id
+    WHERE gap.timestamp_utc_microseconds >= ?
+      AND gap.timestamp_utc_microseconds <= ?
     ORDER BY gap.timestamp_utc_microseconds, gap.system_uptime_microseconds
     """
 
@@ -3037,14 +3457,15 @@ extension MemoryWatcherDatabase {
   }
 
   private static func deleteLogicalCPURawSamplesSQL(
-    olderThan cutoff: Int64
+    measuredOlderThan rawCutoff: Int64,
+    unknownOlderThan unknownCutoff: Int64
   ) -> String {
     """
     DELETE FROM logical_cpu_samples
-    WHERE interval_end_utc_microseconds < \(cutoff)
-      AND (
-        quality != 'measured'
-        OR EXISTS(
+    WHERE (
+        quality = 'measured'
+        AND interval_end_utc_microseconds < \(rawCutoff)
+        AND EXISTS(
           SELECT 1
           FROM logical_cpu_aggregates_1m AS aggregate
           WHERE aggregate.topology_id = logical_cpu_samples.topology_id
@@ -3053,6 +3474,10 @@ extension MemoryWatcherDatabase {
               (logical_cpu_samples.interval_end_utc_microseconds - 1)
                 / \(oneMinuteMicroseconds) * \(oneMinuteMicroseconds)
         )
+      )
+      OR (
+        quality != 'measured'
+        AND interval_end_utc_microseconds < \(unknownCutoff)
       )
     """
   }

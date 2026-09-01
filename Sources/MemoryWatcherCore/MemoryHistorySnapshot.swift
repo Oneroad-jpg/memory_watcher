@@ -114,6 +114,7 @@ public struct MemoryHistorySnapshot: Equatable, Sendable {
   public let points: [MemoryHistoryPoint]
   public let pressureIntervals: [MemoryPressureInterval]
   public let sleepIntervals: [SystemSleepInterval]
+  public let cpuHistory: CPUHistorySnapshot
 
   public init(
     period: MemoryHistoryPeriod,
@@ -121,7 +122,8 @@ public struct MemoryHistorySnapshot: Equatable, Sendable {
     endUTC: Date,
     points: [MemoryHistoryPoint],
     pressureIntervals: [MemoryPressureInterval],
-    sleepIntervals: [SystemSleepInterval]
+    sleepIntervals: [SystemSleepInterval],
+    cpuHistory: CPUHistorySnapshot
   ) {
     self.period = period
     self.startUTC = startUTC
@@ -129,6 +131,7 @@ public struct MemoryHistorySnapshot: Equatable, Sendable {
     self.points = points
     self.pressureIntervals = pressureIntervals
     self.sleepIntervals = sleepIntervals
+    self.cpuHistory = cpuHistory
   }
 }
 
@@ -166,13 +169,20 @@ public struct MemoryHistoryLoader: Sendable {
       from: try database.fetchPressureObservations(),
       range: start...now
     )
+    let cpuHistory = try CPUHistoryLoader(database: database).load(
+      period: period,
+      range: start...now,
+      lifecycleEvents: lifecycleEvents,
+      sleepIntervals: sleepIntervals
+    )
     return MemoryHistorySnapshot(
       period: period,
       startUTC: start,
       endUTC: now,
       points: points,
       pressureIntervals: pressureIntervals,
-      sleepIntervals: sleepIntervals
+      sleepIntervals: sleepIntervals,
+      cpuHistory: cpuHistory
     )
   }
 

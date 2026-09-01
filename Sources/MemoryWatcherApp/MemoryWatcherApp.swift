@@ -443,6 +443,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       let readyDuration = Date().timeIntervalSince(startedAt)
       let status =
         snapshot.points.count >= 4_000
+          && snapshot.cpuHistory.totalPoints.count >= 4_000
+          && snapshot.cpuHistory.logicalPoints.count >= 32_000
           && loadDuration < 2
           && readyDuration < 2
           && window.isVisible
@@ -452,9 +454,11 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         "history_load_seconds": loadDuration,
         "history_point_count": snapshot.points.count,
         "history_source": snapshot.points.first?.source.rawValue ?? "NONE",
+        "logical_cpu_point_count": snapshot.cpuHistory.logicalPoints.count,
         "screen_ready_seconds": readyDuration,
         "sleep_interval_count": snapshot.sleepIntervals.count,
         "status": status,
+        "total_cpu_point_count": snapshot.cpuHistory.totalPoints.count,
         "visible": window.isVisible,
       ])
       NSApplication.shared.terminate(nil)
