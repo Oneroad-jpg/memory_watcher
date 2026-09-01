@@ -35,10 +35,17 @@ final class MonitoringViewModel: ObservableObject {
       sampleCount += 1
       lastMemoryUsedBytes = sample.estimatedMemoryUsedBytes
       history.receiveSample(at: sample.timestampUTC)
-    case .totalCPU:
-      break
-    case .logicalCPU:
-      break
+    case .totalCPU(let sample):
+      history.receiveSample(at: sample.intervalEndUTC)
+    case .logicalCPU(let outcome):
+      switch outcome {
+      case .samples(let samples):
+        if let timestamp = samples.first?.intervalEndUTC {
+          history.receiveSample(at: timestamp)
+        }
+      case .gap(let gap):
+        history.receiveSample(at: gap.timestampUTC)
+      }
     case .gap:
       gapCount += 1
     case .pressure(let observation):
@@ -198,14 +205,47 @@ final class HistoryViewModel: ObservableObject {
   }
 
   func nearestHistoryPoint(to date: Date) -> MemoryHistoryPoint? {
-    guard let points = historySnapshot?.points, !points.isEmpty else {
-      return nil
+    nearestPoint(in: historySnapshot?.points ?? [], to: date, at: \.timestampUTC)
+  }
+
+  func nearestTotalCPUPoint(to date: Date) -> TotalCPUHistoryPoint? {
+    nearestPoint(
+      in: historySnapshot?.cpuHistory.totalPoints ?? [],
+      to: date,
+      at: \.timestampUTC
+    )
+  }
+
+  func nearestLogicalCPUPoints(to date: Date) -> [LogicalCPUHistoryPoint] {
+    guard
+      let snapshot = historySnapshot,
+      !snapshot.cpuHistory.logicalPoints.isEmpty
+    else {
+      return []
     }
+    let nearest = snapshot.cpuHistory.logicalPoints.min {
+      abs($0.timestampUTC.timeIntervalSince(date))
+        < abs($1.timestampUTC.timeIntervalSince(date))
+    }
+    guard let nearest else { return [] }
+    let tolerance = max(0.001, snapshot.period.expectedPointInterval / 2)
+    return snapshot.cpuHistory.logicalPoints.filter {
+      abs($0.timestampUTC.timeIntervalSince(nearest.timestampUTC)) <= tolerance
+        && $0.topology == nearest.topology
+    }.sorted { $0.cpuIndex < $1.cpuIndex }
+  }
+
+  private func nearestPoint<Point>(
+    in points: [Point],
+    to date: Date,
+    at timestamp: KeyPath<Point, Date>
+  ) -> Point? {
+    guard !points.isEmpty else { return nil }
     var lower = 0
     var upper = points.count
     while lower < upper {
       let middle = (lower + upper) / 2
-      if points[middle].timestampUTC < date {
+      if points[middle][keyPath: timestamp] < date {
         lower = middle + 1
       } else {
         upper = middle
@@ -219,8 +259,8 @@ final class HistoryViewModel: ObservableObject {
     }
     let before = points[lower - 1]
     let after = points[lower]
-    return date.timeIntervalSince(before.timestampUTC)
-      <= after.timestampUTC.timeIntervalSince(date)
+    return date.timeIntervalSince(before[keyPath: timestamp])
+      <= after[keyPath: timestamp].timeIntervalSince(date)
       ? before
       : after
   }

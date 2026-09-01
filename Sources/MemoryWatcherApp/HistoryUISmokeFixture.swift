@@ -86,7 +86,89 @@ enum HistoryUISmokeFixture {
         ),
       ]
     )
+    let cpuIndexes = (0..<4_320).filter {
+      !(sleepStartIndex..<sleepEndIndex).contains($0)
+    }
+    try database.insert(
+      totalCPUSamples: cpuIndexes.map { index in
+        totalCPUSample(at: start, index: index)
+      }
+    )
+    let topology = LogicalCPUTopology(
+      epochKey: "history-smoke-logical-8",
+      bootSessionStartUTC: start.addingTimeInterval(-1_000),
+      logicalCPUCount: 8
+    )
+    for index in cpuIndexes {
+      try database.insert(
+        logicalCPUSamples: logicalCPUSamples(
+          topology: topology,
+          at: start,
+          index: index
+        )
+      )
+    }
     _ = try database.performHistoryMaintenance(now: now)
+  }
+
+  private static func totalCPUSample(
+    at start: Date,
+    index: Int
+  ) -> TotalCPUSample {
+    let end = start.addingTimeInterval(Double(index) * 60 + 5)
+    let busy = UInt64(20 + index % 70)
+    return TotalCPUSample(
+      intervalStartUTC: end.addingTimeInterval(-5),
+      intervalEndUTC: end,
+      intervalStartUptimeSeconds: 100_000 + Double(index) * 60,
+      intervalEndUptimeSeconds: 100_005 + Double(index) * 60,
+      delta: cpuDelta(busy: busy, idle: 100 - busy),
+      quality: .measured
+    )
+  }
+
+  private static func logicalCPUSamples(
+    topology: LogicalCPUTopology,
+    at start: Date,
+    index: Int
+  ) -> [LogicalCPUSample] {
+    let end = start.addingTimeInterval(Double(index) * 60 + 5)
+    return (0..<topology.logicalCPUCount).map { cpuIndex in
+      let busy = UInt64(10 + (index * (cpuIndex + 1)) % 85)
+      return LogicalCPUSample(
+        topology: topology,
+        cpuIndex: cpuIndex,
+        intervalStartUTC: end.addingTimeInterval(-5),
+        intervalEndUTC: end,
+        intervalStartUptimeSeconds: 100_000 + Double(index) * 60,
+        intervalEndUptimeSeconds: 100_005 + Double(index) * 60,
+        delta: cpuDelta(busy: busy, idle: 100 - busy),
+        quality: .measured
+      )
+    }
+  }
+
+  private static func cpuDelta(busy: UInt64, idle: UInt64) -> CPUCounterDelta {
+    let user = busy * 2 / 3
+    let system = busy - user
+    let result = CPUUtilizationCalculator.calculate(
+      previous: CPUCounterSnapshot(
+        userTicks: 0,
+        systemTicks: 0,
+        idleTicks: 0,
+        niceTicks: 0
+      ),
+      current: CPUCounterSnapshot(
+        userTicks: user,
+        systemTicks: system,
+        idleTicks: idle,
+        niceTicks: 0
+      )
+    )
+    guard case .measured(let delta) = result else {
+      preconditionFailure("The fixed smoke-test counters must produce a measured CPU delta")
+    }
+    return delta
   }
 
   private static func pressure(
