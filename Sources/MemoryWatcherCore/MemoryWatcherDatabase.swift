@@ -9,7 +9,7 @@ public enum MemoryWatcherDatabaseError: Error, Equatable, Sendable {
 }
 
 public final class MemoryWatcherDatabase: @unchecked Sendable {
-  public static let currentSchemaVersion: Int32 = 3
+  public static let currentSchemaVersion: Int32 = 4
 
   public let url: URL
 
@@ -234,6 +234,29 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  public func insert(totalCPUSamples: [TotalCPUSample]) throws {
+    guard !totalCPUSamples.isEmpty else {
+      return
+    }
+    try locked {
+      try transaction(operation: "insert total CPU samples") {
+        let statement = try prepare(
+          Self.insertTotalCPUSampleSQL,
+          operation: "prepare total CPU sample insert"
+        )
+        defer { sqlite3_finalize(statement) }
+
+        for sample in totalCPUSamples {
+          try TotalCPUSampleValidator.validate(sample)
+          sqlite3_reset(statement)
+          sqlite3_clear_bindings(statement)
+          try bind(totalCPUSample: sample, to: statement)
+          try stepDone(statement, operation: "insert total CPU sample")
+        }
+      }
+    }
+  }
+
   public func sampleCount() throws -> Int {
     try locked {
       try countRows(in: "memory_samples")
@@ -255,6 +278,20 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   public func lifecycleEventCount() throws -> Int {
     try locked {
       try countRows(in: "system_lifecycle_events")
+    }
+  }
+
+  public func totalCPUSampleCount() throws -> Int {
+    try locked {
+      try countRows(in: "total_cpu_samples")
+    }
+  }
+
+  public func totalCPUAggregateCount(
+    resolution: MemoryHistoryResolution
+  ) throws -> Int {
+    try locked {
+      try countRows(in: totalCPUAggregateTable(for: resolution))
     }
   }
 
@@ -289,6 +326,52 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
         }
         aggregates.append(
           try decodeAggregate(from: statement, resolution: resolution)
+        )
+      }
+    }
+  }
+
+  public func fetchTotalCPUSamples() throws -> [TotalCPUSample] {
+    try locked {
+      let statement = try prepare(
+        Self.selectTotalCPUSamplesSQL,
+        operation: "prepare total CPU sample read"
+      )
+      defer { sqlite3_finalize(statement) }
+      var samples: [TotalCPUSample] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE {
+          return samples
+        }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(operation: "read total CPU samples", code: code)
+        }
+        samples.append(try decodeTotalCPUSample(from: statement))
+      }
+    }
+  }
+
+  public func fetchTotalCPUAggregates(
+    resolution: MemoryHistoryResolution
+  ) throws -> [TotalCPUHistoryAggregate] {
+    try locked {
+      let statement = try prepare(
+        selectTotalCPUAggregatesSQL(for: resolution),
+        operation: "prepare total CPU aggregate read"
+      )
+      defer { sqlite3_finalize(statement) }
+      var aggregates: [TotalCPUHistoryAggregate] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE {
+          return aggregates
+        }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(operation: "read total CPU aggregates", code: code)
+        }
+        aggregates.append(
+          try decodeTotalCPUAggregate(from: statement, resolution: resolution)
         )
       }
     }
@@ -340,6 +423,18 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
           ),
           operation: "upsert five-minute memory aggregates"
         )
+        let totalCPUOneMinuteBucketsUpserted = try executeReturningChanges(
+          Self.upsertTotalCPUOneMinuteAggregatesSQL(
+            completedBefore: completedMinuteCutoff
+          ),
+          operation: "upsert one-minute total CPU aggregates"
+        )
+        let totalCPUFiveMinuteBucketsUpserted = try executeReturningChanges(
+          Self.upsertTotalCPUFiveMinuteAggregatesSQL(
+            completedBefore: completedFiveMinuteCutoff
+          ),
+          operation: "upsert five-minute total CPU aggregates"
+        )
 
         try beforeSourceDeletion()
 
@@ -380,6 +475,22 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
           ),
           operation: "delete expired system lifecycle events"
         )
+        let totalCPURawSamplesDeleted = try executeReturningChanges(
+          Self.deleteTotalCPURawSamplesSQL(olderThan: rawCutoff),
+          operation: "delete aggregated total CPU samples"
+        )
+        let totalCPUOneMinuteBucketsDeleted = try executeReturningChanges(
+          Self.deleteTotalCPUOneMinuteAggregatesSQL(
+            completedBefore: oneMinuteCutoff
+          ),
+          operation: "delete rolled-up one-minute total CPU aggregates"
+        )
+        let totalCPUFiveMinuteBucketsDeleted = try executeReturningChanges(
+          Self.deleteTotalCPUFiveMinuteAggregatesSQL(
+            completedBefore: fiveMinuteCutoff
+          ),
+          operation: "delete expired five-minute total CPU aggregates"
+        )
 
         return MemoryHistoryMaintenanceResult(
           oneMinuteBucketsUpserted: oneMinuteBucketsUpserted,
@@ -389,7 +500,14 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
           fiveMinuteBucketsDeleted: fiveMinuteBucketsDeleted,
           pressureObservationsDeleted: pressureObservationsDeleted,
           samplingGapsDeleted: samplingGapsDeleted,
-          lifecycleEventsDeleted: lifecycleEventsDeleted
+          lifecycleEventsDeleted: lifecycleEventsDeleted,
+          totalCPUOneMinuteBucketsUpserted:
+            totalCPUOneMinuteBucketsUpserted,
+          totalCPUFiveMinuteBucketsUpserted:
+            totalCPUFiveMinuteBucketsUpserted,
+          totalCPURawSamplesDeleted: totalCPURawSamplesDeleted,
+          totalCPUOneMinuteBucketsDeleted: totalCPUOneMinuteBucketsDeleted,
+          totalCPUFiveMinuteBucketsDeleted: totalCPUFiveMinuteBucketsDeleted
         )
       }
     }
@@ -585,6 +703,10 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       try migrateToVersion3()
       version = 3
     }
+    if version == 3 {
+      try migrateToVersion4()
+      version = 4
+    }
     guard version == Int64(Self.currentSchemaVersion) else {
       throw MemoryWatcherDatabaseError.unsupportedSchemaVersion(Int32(version))
     }
@@ -611,6 +733,14 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       try execute(Self.schemaVersion3SQL, operation: "create schema version 3")
       try recordMigration(version: 3)
       try execute("PRAGMA user_version = 3", operation: "set schema version 3")
+    }
+  }
+
+  private func migrateToVersion4() throws {
+    try transaction(operation: "migrate schema to version 4") {
+      try execute(Self.schemaVersion4SQL, operation: "create schema version 4")
+      try recordMigration(version: 4)
+      try execute("PRAGMA user_version = 4", operation: "set schema version 4")
     }
   }
 
@@ -723,6 +853,9 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       "system_lifecycle_events",
       "memory_aggregates_1m",
       "memory_aggregates_5m",
+      "total_cpu_samples",
+      "total_cpu_aggregates_1m",
+      "total_cpu_aggregates_5m",
     ]
     guard allowedTables.contains(table) else {
       throw MemoryWatcherDatabaseError.invalidValue(field: "table")
@@ -748,6 +881,17 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  private func totalCPUAggregateTable(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    switch resolution {
+    case .oneMinute:
+      return "total_cpu_aggregates_1m"
+    case .fiveMinutes:
+      return "total_cpu_aggregates_5m"
+    }
+  }
+
   private func selectAggregatesSQL(
     for resolution: MemoryHistoryResolution
   ) -> String {
@@ -762,6 +906,25 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       average_estimated_cached_files_bytes,
       average_swap_used_bytes
     FROM \(aggregateTable(for: resolution))
+    ORDER BY bucket_start_utc_microseconds
+    """
+  }
+
+  private func selectTotalCPUAggregatesSQL(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    """
+    SELECT
+      bucket_start_utc_microseconds,
+      sample_count,
+      summed_user_ticks,
+      summed_system_ticks,
+      summed_idle_ticks,
+      summed_nice_ticks,
+      summed_busy_ticks,
+      summed_total_ticks,
+      calculation_version
+    FROM \(totalCPUAggregateTable(for: resolution))
     ORDER BY bucket_start_utc_microseconds
     """
   }
@@ -899,6 +1062,74 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   }
 
   private func bind(
+    totalCPUSample sample: TotalCPUSample,
+    to statement: OpaquePointer
+  ) throws {
+    try bindOptional(
+      try sample.intervalStartUTC.map {
+        try Self.microseconds(since1970: $0, field: "CPU interval start")
+      },
+      at: 1,
+      to: statement,
+      operation: "bind CPU interval start"
+    )
+    try bind(
+      Self.microseconds(
+        since1970: sample.intervalEndUTC,
+        field: "CPU interval end"
+      ),
+      at: 2,
+      to: statement,
+      operation: "bind CPU interval end"
+    )
+    try bindOptional(
+      try sample.intervalStartUptimeSeconds.map {
+        try Self.microseconds(interval: $0, field: "CPU interval start uptime")
+      },
+      at: 3,
+      to: statement,
+      operation: "bind CPU interval start uptime"
+    )
+    try bind(
+      Self.microseconds(
+        interval: sample.intervalEndUptimeSeconds,
+        field: "CPU interval end uptime"
+      ),
+      at: 4,
+      to: statement,
+      operation: "bind CPU interval end uptime"
+    )
+    let deltas: [(UInt64?, String)] = [
+      (sample.delta?.userTicks, "CPU user ticks"),
+      (sample.delta?.systemTicks, "CPU system ticks"),
+      (sample.delta?.idleTicks, "CPU idle ticks"),
+      (sample.delta?.niceTicks, "CPU nice ticks"),
+      (sample.delta?.busyTicks, "CPU busy ticks"),
+      (sample.delta?.totalTicks, "CPU total ticks"),
+    ]
+    for (offset, delta) in deltas.enumerated() {
+      try bindOptional(
+        delta.0,
+        field: delta.1,
+        at: Int32(offset + 5),
+        to: statement
+      )
+    }
+    try bind(
+      sample.calculationVersion,
+      at: 11,
+      to: statement,
+      operation: "bind CPU calculation version"
+    )
+    try bind(
+      sample.quality.rawValue,
+      at: 12,
+      to: statement,
+      operation: "bind CPU quality"
+    )
+  }
+
+  private func bind(
     _ value: UInt64,
     field: String,
     at index: Int32,
@@ -929,6 +1160,22 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       return
     }
     try bind(value, field: field, at: index, to: statement)
+  }
+
+  private func bindOptional(
+    _ value: Int64?,
+    at index: Int32,
+    to statement: OpaquePointer,
+    operation: String
+  ) throws {
+    guard let value else {
+      let code = sqlite3_bind_null(statement, index)
+      guard code == SQLITE_OK else {
+        throw sqliteError(operation: operation, code: code)
+      }
+      return
+    }
+    try bind(value, at: index, to: statement, operation: operation)
   }
 
   private func bind(
@@ -1046,6 +1293,122 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     )
   }
 
+  private func decodeTotalCPUSample(
+    from statement: OpaquePointer
+  ) throws -> TotalCPUSample {
+    guard
+      let calculationVersion = text(at: 10, from: statement),
+      let qualityText = text(at: 11, from: statement),
+      let quality = CPUUtilizationQuality(rawValue: qualityText)
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode total CPU sample"
+      )
+    }
+
+    let delta: CPUCounterDelta?
+    if quality == .measured {
+      guard
+        let userTicks = try optionalUnsigned(at: 4, from: statement),
+        let systemTicks = try optionalUnsigned(at: 5, from: statement),
+        let idleTicks = try optionalUnsigned(at: 6, from: statement),
+        let niceTicks = try optionalUnsigned(at: 7, from: statement),
+        let busyTicks = try optionalUnsigned(at: 8, from: statement),
+        let totalTicks = try optionalUnsigned(at: 9, from: statement)
+      else {
+        throw MemoryWatcherDatabaseError.unexpectedRow(
+          operation: "decode measured total CPU sample"
+        )
+      }
+      delta = CPUCounterDelta(
+        userTicks: userTicks,
+        systemTicks: systemTicks,
+        idleTicks: idleTicks,
+        niceTicks: niceTicks,
+        busyTicks: busyTicks,
+        totalTicks: totalTicks
+      )
+    } else {
+      guard (4...9).allSatisfy({ sqlite3_column_type(statement, Int32($0)) == SQLITE_NULL })
+      else {
+        throw MemoryWatcherDatabaseError.unexpectedRow(
+          operation: "decode unknown total CPU sample"
+        )
+      }
+      delta = nil
+    }
+
+    let startUTCValue = optionalInt64(at: 0, from: statement)
+    let startUptimeValue = optionalInt64(at: 2, from: statement)
+    let sample = TotalCPUSample(
+      intervalStartUTC: startUTCValue.map(Self.date(fromMicroseconds:)),
+      intervalEndUTC: Self.date(
+        fromMicroseconds: sqlite3_column_int64(statement, 1)
+      ),
+      intervalStartUptimeSeconds: startUptimeValue.map(
+        Self.interval(fromMicroseconds:)
+      ),
+      intervalEndUptimeSeconds: Self.interval(
+        fromMicroseconds: sqlite3_column_int64(statement, 3)
+      ),
+      delta: delta,
+      calculationVersion: calculationVersion,
+      quality: quality
+    )
+    try TotalCPUSampleValidator.validate(sample)
+    return sample
+  }
+
+  private func decodeTotalCPUAggregate(
+    from statement: OpaquePointer,
+    resolution: MemoryHistoryResolution
+  ) throws -> TotalCPUHistoryAggregate {
+    let sampleCountValue = sqlite3_column_int64(statement, 1)
+    guard
+      sampleCountValue > 0,
+      let sampleCount = Int(exactly: sampleCountValue),
+      let calculationVersion = text(at: 8, from: statement)
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode total CPU aggregate"
+      )
+    }
+    let values = try (2...7).map { try unsigned(at: Int32($0), from: statement) }
+    let busyAddition = values[0].addingReportingOverflow(values[1])
+    guard !busyAddition.overflow else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode total CPU aggregate busy ticks"
+      )
+    }
+    let busyWithNice = busyAddition.partialValue.addingReportingOverflow(values[3])
+    let total = values[4].addingReportingOverflow(values[2])
+    guard
+      !busyWithNice.overflow,
+      !total.overflow,
+      busyWithNice.partialValue == values[4],
+      total.partialValue == values[5],
+      values[5] > 0
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode total CPU aggregate tick relationship"
+      )
+    }
+    return TotalCPUHistoryAggregate(
+      resolution: resolution,
+      bucketStartUTC: Self.date(
+        fromMicroseconds: sqlite3_column_int64(statement, 0)
+      ),
+      sampleCount: sampleCount,
+      summedUserTicks: values[0],
+      summedSystemTicks: values[1],
+      summedIdleTicks: values[2],
+      summedNiceTicks: values[3],
+      summedBusyTicks: values[4],
+      summedTotalTicks: values[5],
+      calculationVersion: calculationVersion
+    )
+  }
+
   private func decodeGap(from statement: OpaquePointer) throws -> MemorySamplingGap {
     guard
       let attemptCount = Int(exactly: sqlite3_column_int64(statement, 2)),
@@ -1102,6 +1465,16 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       return nil
     }
     return try unsigned(at: index, from: statement)
+  }
+
+  private func optionalInt64(
+    at index: Int32,
+    from statement: OpaquePointer
+  ) -> Int64? {
+    guard sqlite3_column_type(statement, index) != SQLITE_NULL else {
+      return nil
+    }
+    return sqlite3_column_int64(statement, index)
   }
 
   private func text(at index: Int32, from statement: OpaquePointer) -> String? {
@@ -1255,6 +1628,89 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     """
   }
 
+  private static func upsertTotalCPUOneMinuteAggregatesSQL(
+    completedBefore: Int64
+  ) -> String {
+    """
+    INSERT INTO total_cpu_aggregates_1m(
+      bucket_start_utc_microseconds,
+      sample_count,
+      summed_user_ticks,
+      summed_system_ticks,
+      summed_idle_ticks,
+      summed_nice_ticks,
+      summed_busy_ticks,
+      summed_total_ticks,
+      calculation_version
+    )
+    SELECT
+      (interval_end_utc_microseconds - 1) / \(oneMinuteMicroseconds)
+        * \(oneMinuteMicroseconds),
+      COUNT(*),
+      SUM(user_ticks),
+      SUM(system_ticks),
+      SUM(idle_ticks),
+      SUM(nice_ticks),
+      SUM(busy_ticks),
+      SUM(total_ticks),
+      MAX(calculation_version)
+    FROM total_cpu_samples
+    WHERE quality = 'measured'
+      AND interval_end_utc_microseconds <= \(completedBefore)
+    GROUP BY (interval_end_utc_microseconds - 1) / \(oneMinuteMicroseconds)
+    ON CONFLICT(bucket_start_utc_microseconds) DO UPDATE SET
+      sample_count = excluded.sample_count,
+      summed_user_ticks = excluded.summed_user_ticks,
+      summed_system_ticks = excluded.summed_system_ticks,
+      summed_idle_ticks = excluded.summed_idle_ticks,
+      summed_nice_ticks = excluded.summed_nice_ticks,
+      summed_busy_ticks = excluded.summed_busy_ticks,
+      summed_total_ticks = excluded.summed_total_ticks,
+      calculation_version = excluded.calculation_version
+    """
+  }
+
+  private static func upsertTotalCPUFiveMinuteAggregatesSQL(
+    completedBefore: Int64
+  ) -> String {
+    """
+    INSERT INTO total_cpu_aggregates_5m(
+      bucket_start_utc_microseconds,
+      sample_count,
+      summed_user_ticks,
+      summed_system_ticks,
+      summed_idle_ticks,
+      summed_nice_ticks,
+      summed_busy_ticks,
+      summed_total_ticks,
+      calculation_version
+    )
+    SELECT
+      bucket_start_utc_microseconds / \(fiveMinuteMicroseconds)
+        * \(fiveMinuteMicroseconds),
+      SUM(sample_count),
+      SUM(summed_user_ticks),
+      SUM(summed_system_ticks),
+      SUM(summed_idle_ticks),
+      SUM(summed_nice_ticks),
+      SUM(summed_busy_ticks),
+      SUM(summed_total_ticks),
+      MAX(calculation_version)
+    FROM total_cpu_aggregates_1m
+    WHERE bucket_start_utc_microseconds < \(completedBefore)
+    GROUP BY bucket_start_utc_microseconds / \(fiveMinuteMicroseconds)
+    ON CONFLICT(bucket_start_utc_microseconds) DO UPDATE SET
+      sample_count = excluded.sample_count,
+      summed_user_ticks = excluded.summed_user_ticks,
+      summed_system_ticks = excluded.summed_system_ticks,
+      summed_idle_ticks = excluded.summed_idle_ticks,
+      summed_nice_ticks = excluded.summed_nice_ticks,
+      summed_busy_ticks = excluded.summed_busy_ticks,
+      summed_total_ticks = excluded.summed_total_ticks,
+      calculation_version = excluded.calculation_version
+    """
+  }
+
   private static func deleteRawSamplesSQL(olderThan cutoff: Int64) -> String {
     """
     DELETE FROM memory_samples
@@ -1265,6 +1721,25 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
         WHERE bucket_start_utc_microseconds =
           memory_samples.timestamp_utc_microseconds / \(oneMinuteMicroseconds)
             * \(oneMinuteMicroseconds)
+      )
+    """
+  }
+
+  private static func deleteTotalCPURawSamplesSQL(
+    olderThan cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM total_cpu_samples
+    WHERE interval_end_utc_microseconds < \(cutoff)
+      AND (
+        quality != 'measured'
+        OR EXISTS(
+          SELECT 1
+          FROM total_cpu_aggregates_1m
+          WHERE bucket_start_utc_microseconds =
+            (total_cpu_samples.interval_end_utc_microseconds - 1)
+              / \(oneMinuteMicroseconds) * \(oneMinuteMicroseconds)
+        )
       )
     """
   }
@@ -1290,6 +1765,31 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   ) -> String {
     """
     DELETE FROM memory_aggregates_5m
+    WHERE bucket_start_utc_microseconds + \(fiveMinuteMicroseconds) <= \(cutoff)
+    """
+  }
+
+  private static func deleteTotalCPUOneMinuteAggregatesSQL(
+    completedBefore cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM total_cpu_aggregates_1m
+    WHERE bucket_start_utc_microseconds + \(oneMinuteMicroseconds) <= \(cutoff)
+      AND EXISTS(
+        SELECT 1
+        FROM total_cpu_aggregates_5m
+        WHERE bucket_start_utc_microseconds =
+          total_cpu_aggregates_1m.bucket_start_utc_microseconds
+            / \(fiveMinuteMicroseconds) * \(fiveMinuteMicroseconds)
+      )
+    """
+  }
+
+  private static func deleteTotalCPUFiveMinuteAggregatesSQL(
+    completedBefore cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM total_cpu_aggregates_5m
     WHERE bucket_start_utc_microseconds + \(fiveMinuteMicroseconds) <= \(cutoff)
     """
   }
@@ -1334,6 +1834,23 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
+    """
+
+  private static let insertTotalCPUSampleSQL = """
+    INSERT INTO total_cpu_samples(
+      interval_start_utc_microseconds,
+      interval_end_utc_microseconds,
+      interval_start_uptime_microseconds,
+      interval_end_uptime_microseconds,
+      user_ticks,
+      system_ticks,
+      idle_ticks,
+      nice_ticks,
+      busy_ticks,
+      total_ticks,
+      calculation_version,
+      quality
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
   private static let insertPressureSQL = """
@@ -1453,6 +1970,24 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     FROM memory_samples
     ORDER BY id DESC
     LIMIT 1
+    """
+
+  private static let selectTotalCPUSamplesSQL = """
+    SELECT
+      interval_start_utc_microseconds,
+      interval_end_utc_microseconds,
+      interval_start_uptime_microseconds,
+      interval_end_uptime_microseconds,
+      user_ticks,
+      system_ticks,
+      idle_ticks,
+      nice_ticks,
+      busy_ticks,
+      total_ticks,
+      calculation_version,
+      quality
+    FROM total_cpu_samples
+    ORDER BY interval_end_utc_microseconds, interval_end_uptime_microseconds
     """
 
   private static let schemaVersion1SQL = """
@@ -1577,5 +2112,116 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
         CHECK(average_estimated_cached_files_bytes >= 0),
       average_swap_used_bytes REAL NOT NULL CHECK(average_swap_used_bytes >= 0)
     );
+    """
+
+  private static let schemaVersion4SQL = """
+    CREATE TABLE total_cpu_samples(
+      id INTEGER PRIMARY KEY,
+      interval_start_utc_microseconds INTEGER
+        CHECK(interval_start_utc_microseconds >= 0),
+      interval_end_utc_microseconds INTEGER NOT NULL
+        CHECK(interval_end_utc_microseconds >= 0),
+      interval_start_uptime_microseconds INTEGER
+        CHECK(interval_start_uptime_microseconds >= 0),
+      interval_end_uptime_microseconds INTEGER NOT NULL
+        CHECK(interval_end_uptime_microseconds >= 0),
+      user_ticks INTEGER CHECK(user_ticks >= 0),
+      system_ticks INTEGER CHECK(system_ticks >= 0),
+      idle_ticks INTEGER CHECK(idle_ticks >= 0),
+      nice_ticks INTEGER CHECK(nice_ticks >= 0),
+      busy_ticks INTEGER CHECK(busy_ticks >= 0),
+      total_ticks INTEGER CHECK(total_ticks > 0),
+      calculation_version TEXT NOT NULL CHECK(length(calculation_version) > 0),
+      quality TEXT NOT NULL CHECK(
+        quality IN (
+          'measured',
+          'firstDeltaUnknown',
+          'sleepBoundary',
+          'wakeBoundary',
+          'rebootBoundary',
+          'clockChangeBoundary',
+          'topologyChangeBoundary',
+          'intervalOutOfRange',
+          'unavailable',
+          'counterRegression',
+          'noTickProgress',
+          'arithmeticOverflow'
+        )
+      ),
+      CHECK(
+        (
+          quality = 'measured'
+          AND interval_start_utc_microseconds IS NOT NULL
+          AND interval_start_uptime_microseconds IS NOT NULL
+          AND interval_end_utc_microseconds >= interval_start_utc_microseconds
+          AND interval_end_uptime_microseconds > interval_start_uptime_microseconds
+          AND user_ticks IS NOT NULL
+          AND system_ticks IS NOT NULL
+          AND idle_ticks IS NOT NULL
+          AND nice_ticks IS NOT NULL
+          AND busy_ticks = user_ticks + system_ticks + nice_ticks
+          AND total_ticks = busy_ticks + idle_ticks
+        )
+        OR (
+          quality != 'measured'
+          AND interval_start_utc_microseconds IS NULL
+          AND interval_start_uptime_microseconds IS NULL
+          AND user_ticks IS NULL
+          AND system_ticks IS NULL
+          AND idle_ticks IS NULL
+          AND nice_ticks IS NULL
+          AND busy_ticks IS NULL
+          AND total_ticks IS NULL
+        )
+      ),
+      UNIQUE(interval_end_utc_microseconds, interval_end_uptime_microseconds)
+    );
+
+    CREATE TABLE total_cpu_aggregates_1m(
+      bucket_start_utc_microseconds INTEGER PRIMARY KEY
+        CHECK(
+          bucket_start_utc_microseconds >= 0
+          AND bucket_start_utc_microseconds % 60000000 = 0
+        ),
+      sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+      summed_user_ticks INTEGER NOT NULL CHECK(summed_user_ticks >= 0),
+      summed_system_ticks INTEGER NOT NULL CHECK(summed_system_ticks >= 0),
+      summed_idle_ticks INTEGER NOT NULL CHECK(summed_idle_ticks >= 0),
+      summed_nice_ticks INTEGER NOT NULL CHECK(summed_nice_ticks >= 0),
+      summed_busy_ticks INTEGER NOT NULL CHECK(
+        summed_busy_ticks = summed_user_ticks + summed_system_ticks
+          + summed_nice_ticks
+      ),
+      summed_total_ticks INTEGER NOT NULL CHECK(
+        summed_total_ticks = summed_busy_ticks + summed_idle_ticks
+        AND summed_total_ticks > 0
+      ),
+      calculation_version TEXT NOT NULL CHECK(length(calculation_version) > 0)
+    );
+
+    CREATE TABLE total_cpu_aggregates_5m(
+      bucket_start_utc_microseconds INTEGER PRIMARY KEY
+        CHECK(
+          bucket_start_utc_microseconds >= 0
+          AND bucket_start_utc_microseconds % 300000000 = 0
+        ),
+      sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+      summed_user_ticks INTEGER NOT NULL CHECK(summed_user_ticks >= 0),
+      summed_system_ticks INTEGER NOT NULL CHECK(summed_system_ticks >= 0),
+      summed_idle_ticks INTEGER NOT NULL CHECK(summed_idle_ticks >= 0),
+      summed_nice_ticks INTEGER NOT NULL CHECK(summed_nice_ticks >= 0),
+      summed_busy_ticks INTEGER NOT NULL CHECK(
+        summed_busy_ticks = summed_user_ticks + summed_system_ticks
+          + summed_nice_ticks
+      ),
+      summed_total_ticks INTEGER NOT NULL CHECK(
+        summed_total_ticks = summed_busy_ticks + summed_idle_ticks
+        AND summed_total_ticks > 0
+      ),
+      calculation_version TEXT NOT NULL CHECK(length(calculation_version) > 0)
+    );
+
+    CREATE INDEX total_cpu_samples_end_timestamp_index
+      ON total_cpu_samples(interval_end_utc_microseconds);
     """
 }

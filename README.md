@@ -88,7 +88,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 完了: 工程11「軽量性・非通信検証」
 - 完了: 工程12「アプリ化・最終読戻し」
 - v0.1完成
-- 工程13「CPU取得要件と品質の固定」: 技術契約固定済み。工程完了は対応PRのmergeとremote readbackで判定
+- 完了: 工程13「CPU取得要件と品質の固定」
+- 工程14「Mac全体CPUの保存」: 実装・技術検証済み。工程完了は対応PRのmergeとremote readbackで判定
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
@@ -96,7 +97,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 工程12検証記録: [アプリ化・最終読戻し](docs/Phase_12_Verification.md)
 - CPU指標定義: [CPU指標定義 v1](docs/CPU_Metric_Definitions_v1.md)
 - 工程13検証記録: [CPU取得要件・品質契約](docs/Phase_13_Verification.md)
-- 次版の計画（未実装）: [v0.2 CPU・統合画面工程表](docs/Memory_Watcher_v0.2_CPU_and_Unified_Dashboard_Plan.md)
+- 工程14検証記録: [Mac全体CPU保存](docs/Phase_14_Verification.md)
+- v0.2計画: [CPU・統合画面工程表](docs/Memory_Watcher_v0.2_CPU_and_Unified_Dashboard_Plan.md)
 
 ## 開発
 

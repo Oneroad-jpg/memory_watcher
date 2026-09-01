@@ -16,6 +16,15 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
     XCTAssertEqual(try database.pressureObservationCount(), 0)
     XCTAssertEqual(try database.samplingGapCount(), 0)
     XCTAssertEqual(try database.lifecycleEventCount(), 0)
+    XCTAssertEqual(try database.totalCPUSampleCount(), 0)
+    XCTAssertEqual(
+      try database.totalCPUAggregateCount(resolution: .oneMinute),
+      0
+    )
+    XCTAssertEqual(
+      try database.totalCPUAggregateCount(resolution: .fiveMinutes),
+      0
+    )
     XCTAssertEqual(try database.integrityCheck(), "ok")
   }
 
@@ -73,6 +82,44 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
     XCTAssertThrowsError(try database.insert(samples: [sample]))
     XCTAssertEqual(try database.sampleCount(), 1)
     XCTAssertEqual(try database.fetchSamples(), [sample])
+  }
+
+  func testDatabaseRoundTripsMeasuredAndUnknownTotalCPUSamples() throws {
+    let database = try makeDatabase()
+    let samples = [
+      Self.totalCPUSample(end: 10_005, uptime: 8_005, busy: 60, idle: 40),
+      Self.unknownTotalCPUSample(
+        end: 10_010,
+        uptime: 8_010,
+        quality: .wakeBoundary
+      ),
+    ]
+
+    try database.insert(totalCPUSamples: samples)
+
+    XCTAssertEqual(try database.totalCPUSampleCount(), 2)
+    XCTAssertEqual(try database.fetchTotalCPUSamples(), samples)
+    XCTAssertEqual(try database.integrityCheck(), "ok")
+  }
+
+  func testDuplicateTotalCPUSampleRollsBackTheWholeBatch() throws {
+    let database = try makeDatabase()
+    let sample = Self.totalCPUSample(
+      end: 20_005,
+      uptime: 18_005,
+      busy: 50,
+      idle: 50
+    )
+
+    XCTAssertThrowsError(
+      try database.insert(totalCPUSamples: [sample, sample])
+    )
+    XCTAssertEqual(try database.totalCPUSampleCount(), 0)
+
+    try database.insert(totalCPUSamples: [sample])
+    XCTAssertThrowsError(try database.insert(totalCPUSamples: [sample]))
+    XCTAssertEqual(try database.fetchTotalCPUSamples(), [sample])
+    XCTAssertEqual(try database.integrityCheck(), "ok")
   }
 
   func testDuplicatePressureAndGapRecordsRollBackTheirBatches() throws {
@@ -272,6 +319,44 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
         classifiedMemoryUsedBytes: 100 * 4_096,
         excessBytes: 30 * 4_096
       )
+    )
+  }
+
+  private static func totalCPUSample(
+    end: TimeInterval,
+    uptime: TimeInterval,
+    busy: UInt64,
+    idle: UInt64
+  ) -> TotalCPUSample {
+    TotalCPUSample(
+      intervalStartUTC: Date(timeIntervalSince1970: end - 5),
+      intervalEndUTC: Date(timeIntervalSince1970: end),
+      intervalStartUptimeSeconds: uptime - 5,
+      intervalEndUptimeSeconds: uptime,
+      delta: CPUCounterDelta(
+        userTicks: busy / 2,
+        systemTicks: busy - busy / 2,
+        idleTicks: idle,
+        niceTicks: 0,
+        busyTicks: busy,
+        totalTicks: busy + idle
+      ),
+      quality: .measured
+    )
+  }
+
+  private static func unknownTotalCPUSample(
+    end: TimeInterval,
+    uptime: TimeInterval,
+    quality: CPUUtilizationQuality
+  ) -> TotalCPUSample {
+    TotalCPUSample(
+      intervalStartUTC: nil,
+      intervalEndUTC: Date(timeIntervalSince1970: end),
+      intervalStartUptimeSeconds: nil,
+      intervalEndUptimeSeconds: uptime,
+      delta: nil,
+      quality: quality
     )
   }
 }

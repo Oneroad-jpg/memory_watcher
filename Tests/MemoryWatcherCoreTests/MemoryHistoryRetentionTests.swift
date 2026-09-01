@@ -5,7 +5,7 @@ import XCTest
 @testable import MemoryWatcherCore
 
 final class MemoryHistoryRetentionTests: XCTestCase {
-  func testVersionTwoDatabaseMigratesWithoutLosingRawSamples() throws {
+  func testVersionTwoDatabaseMigratesThroughVersionFourWithoutLosingRawSamples() throws {
     let directory = try makeTemporaryDirectory()
     let databaseURL = directory.appendingPathComponent("migration.sqlite3")
     let preservedSample = sample(
@@ -21,10 +21,35 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     try convertVersionThreeFixtureToVersionTwo(at: databaseURL)
 
     let migrated = try MemoryWatcherDatabase(url: databaseURL)
-    XCTAssertEqual(try migrated.schemaVersion(), 3)
+    XCTAssertEqual(try migrated.schemaVersion(), 4)
     XCTAssertEqual(try migrated.fetchSamples(), [preservedSample])
     XCTAssertEqual(try migrated.aggregateCount(resolution: .oneMinute), 0)
     XCTAssertEqual(try migrated.aggregateCount(resolution: .fiveMinutes), 0)
+    XCTAssertEqual(try migrated.totalCPUSampleCount(), 0)
+    XCTAssertEqual(try migrated.integrityCheck(), "ok")
+  }
+
+  func testVersionThreeDatabaseMigratesToVersionFourWithoutLosingMemoryHistory()
+    throws
+  {
+    let directory = try makeTemporaryDirectory()
+    let databaseURL = directory.appendingPathComponent("migration-v3.sqlite3")
+    let preservedSample = sample(
+      at: Date(timeIntervalSince1970: 180_005),
+      value: 88
+    )
+    var database: MemoryWatcherDatabase? = try MemoryWatcherDatabase(
+      url: databaseURL
+    )
+    try database?.insert(samples: [preservedSample])
+    database = nil
+
+    try convertVersionFourFixtureToVersionThree(at: databaseURL)
+
+    let migrated = try MemoryWatcherDatabase(url: databaseURL)
+    XCTAssertEqual(try migrated.schemaVersion(), 4)
+    XCTAssertEqual(try migrated.fetchSamples(), [preservedSample])
+    XCTAssertEqual(try migrated.totalCPUSampleCount(), 0)
     XCTAssertEqual(try migrated.integrityCheck(), "ok")
   }
 
@@ -97,6 +122,91 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     )
   }
 
+  func testTotalCPUAggregationSumsTicksInsteadOfAveragingPercentages() throws {
+    let database = try makeDatabase()
+    let bucketStart = Date(timeIntervalSince1970: 240_000)
+    try database.insert(
+      totalCPUSamples: [
+        totalCPUSample(
+          endingAt: bucketStart.addingTimeInterval(5),
+          busy: 90,
+          idle: 10
+        ),
+        totalCPUSample(
+          endingAt: bucketStart.addingTimeInterval(10),
+          busy: 10,
+          idle: 190
+        ),
+        unknownTotalCPUSample(
+          endingAt: bucketStart.addingTimeInterval(15),
+          quality: .unavailable
+        ),
+      ]
+    )
+
+    _ = try database.performHistoryMaintenance(
+      now: bucketStart.addingTimeInterval(600)
+    )
+
+    let oneMinute = try XCTUnwrap(
+      database.fetchTotalCPUAggregates(resolution: .oneMinute).first
+    )
+    let fiveMinutes = try XCTUnwrap(
+      database.fetchTotalCPUAggregates(resolution: .fiveMinutes).first
+    )
+    XCTAssertEqual(oneMinute.sampleCount, 2)
+    XCTAssertEqual(oneMinute.summedBusyTicks, 100)
+    XCTAssertEqual(oneMinute.summedIdleTicks, 200)
+    XCTAssertEqual(oneMinute.summedTotalTicks, 300)
+    XCTAssertEqual(oneMinute.utilizationPercent, 100.0 / 3.0, accuracy: 0.000_001)
+    XCTAssertEqual(fiveMinutes.sampleCount, 2)
+    XCTAssertEqual(fiveMinutes.summedTotalTicks, 300)
+    XCTAssertEqual(fiveMinutes.utilizationPercent, 100.0 / 3.0, accuracy: 0.000_001)
+  }
+
+  func testTotalCPUThreeDayFixtureHonorsRawAndAggregateBoundaries() throws {
+    let database = try makeDatabase()
+    let day: TimeInterval = 24 * 60 * 60
+    let now = Date(timeIntervalSince1970: 50 * day)
+    try database.insert(
+      totalCPUSamples: [
+        totalCPUSample(endingAt: now.addingTimeInterval(-4 * day), busy: 10, idle: 90),
+        unknownTotalCPUSample(
+          endingAt: now.addingTimeInterval(-4 * day + 5),
+          quality: .wakeBoundary
+        ),
+        totalCPUSample(
+          endingAt: now.addingTimeInterval(-3 * day + 5),
+          busy: 20,
+          idle: 80
+        ),
+        totalCPUSample(endingAt: now.addingTimeInterval(-day), busy: 30, idle: 70),
+        totalCPUSample(endingAt: now, busy: 40, idle: 60),
+      ]
+    )
+
+    _ = try database.performHistoryMaintenance(now: now)
+
+    XCTAssertEqual(
+      try database.fetchTotalCPUSamples().map(\.intervalEndUTC),
+      [now.addingTimeInterval(-day), now]
+    )
+    XCTAssertEqual(
+      try database.fetchTotalCPUAggregates(resolution: .oneMinute).first?
+        .bucketStartUTC,
+      now.addingTimeInterval(-3 * day)
+    )
+    XCTAssertEqual(
+      try database.totalCPUAggregateCount(resolution: .oneMinute),
+      3
+    )
+    XCTAssertEqual(
+      try database.totalCPUAggregateCount(resolution: .fiveMinutes),
+      3
+    )
+    XCTAssertEqual(try database.integrityCheck(), "ok")
+  }
+
   func testFourDayDataHonorsEveryRetentionBoundary() throws {
     let database = try makeDatabase()
     let day: TimeInterval = 24 * 60 * 60
@@ -163,6 +273,12 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     try database.insert(
       samples: [sample(at: now.addingTimeInterval(-2 * 24 * 60 * 60), value: 1)]
     )
+    let cpuSample = totalCPUSample(
+      endingAt: now.addingTimeInterval(-2 * 24 * 60 * 60),
+      busy: 50,
+      idle: 50
+    )
+    try database.insert(totalCPUSamples: [cpuSample])
 
     XCTAssertThrowsError(
       try database.performHistoryMaintenance(
@@ -176,6 +292,15 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     XCTAssertEqual(try database.sampleCount(), 1)
     XCTAssertEqual(try database.aggregateCount(resolution: .oneMinute), 0)
     XCTAssertEqual(try database.aggregateCount(resolution: .fiveMinutes), 0)
+    XCTAssertEqual(try database.fetchTotalCPUSamples(), [cpuSample])
+    XCTAssertEqual(
+      try database.totalCPUAggregateCount(resolution: .oneMinute),
+      0
+    )
+    XCTAssertEqual(
+      try database.totalCPUAggregateCount(resolution: .fiveMinutes),
+      0
+    )
     XCTAssertEqual(try database.integrityCheck(), "ok")
   }
 
@@ -236,6 +361,32 @@ final class MemoryHistoryRetentionTests: XCTestCase {
   }
 
   private func convertVersionThreeFixtureToVersionTwo(at url: URL) throws {
+    try convertVersionFourFixtureToVersionThree(at: url)
+    try executeFixtureSQL(
+      """
+      DROP TABLE memory_aggregates_1m;
+      DROP TABLE memory_aggregates_5m;
+      DELETE FROM schema_migrations WHERE version = 3;
+      PRAGMA user_version = 2;
+      """,
+      at: url
+    )
+  }
+
+  private func convertVersionFourFixtureToVersionThree(at url: URL) throws {
+    try executeFixtureSQL(
+      """
+      DROP TABLE total_cpu_aggregates_5m;
+      DROP TABLE total_cpu_aggregates_1m;
+      DROP TABLE total_cpu_samples;
+      DELETE FROM schema_migrations WHERE version = 4;
+      PRAGMA user_version = 3;
+      """,
+      at: url
+    )
+  }
+
+  private func executeFixtureSQL(_ sql: String, at url: URL) throws {
     var connection: OpaquePointer?
     let openCode = sqlite3_open_v2(
       url.path,
@@ -250,12 +401,6 @@ final class MemoryHistoryRetentionTests: XCTestCase {
       throw HistoryFixtureError.sqlite(code: openCode)
     }
     defer { sqlite3_close_v2(connection) }
-    let sql = """
-      DROP TABLE memory_aggregates_1m;
-      DROP TABLE memory_aggregates_5m;
-      DELETE FROM schema_migrations WHERE version = 3;
-      PRAGMA user_version = 2;
-      """
     var errorMessage: UnsafeMutablePointer<CChar>?
     let code = sqlite3_exec(connection, sql, nil, nil, &errorMessage)
     if let errorMessage {
@@ -291,6 +436,42 @@ final class MemoryHistoryRetentionTests: XCTestCase {
       calculationVersion: MemoryMetricsCalculator.calculationVersion,
       acquisitionQuality: .firstPass,
       acquisitionAttemptCount: 1
+    )
+  }
+
+  private func totalCPUSample(
+    endingAt end: Date,
+    busy: UInt64,
+    idle: UInt64
+  ) -> TotalCPUSample {
+    TotalCPUSample(
+      intervalStartUTC: end.addingTimeInterval(-5),
+      intervalEndUTC: end,
+      intervalStartUptimeSeconds: max(0, end.timeIntervalSince1970 - 5),
+      intervalEndUptimeSeconds: max(5, end.timeIntervalSince1970),
+      delta: CPUCounterDelta(
+        userTicks: busy,
+        systemTicks: 0,
+        idleTicks: idle,
+        niceTicks: 0,
+        busyTicks: busy,
+        totalTicks: busy + idle
+      ),
+      quality: .measured
+    )
+  }
+
+  private func unknownTotalCPUSample(
+    endingAt end: Date,
+    quality: CPUUtilizationQuality
+  ) -> TotalCPUSample {
+    TotalCPUSample(
+      intervalStartUTC: nil,
+      intervalEndUTC: end,
+      intervalStartUptimeSeconds: nil,
+      intervalEndUptimeSeconds: max(0, end.timeIntervalSince1970),
+      delta: nil,
+      quality: quality
     )
   }
 

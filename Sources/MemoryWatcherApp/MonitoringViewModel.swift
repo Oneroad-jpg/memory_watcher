@@ -35,6 +35,8 @@ final class MonitoringViewModel: ObservableObject {
       sampleCount += 1
       lastMemoryUsedBytes = sample.estimatedMemoryUsedBytes
       history.receiveSample(at: sample.timestampUTC)
+    case .totalCPU:
+      break
     case .gap:
       gapCount += 1
     case .pressure(let observation):
