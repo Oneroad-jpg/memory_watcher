@@ -37,6 +37,8 @@ final class MonitoringViewModel: ObservableObject {
       history.receiveSample(at: sample.timestampUTC)
     case .totalCPU:
       break
+    case .logicalCPU:
+      break
     case .gap:
       gapCount += 1
     case .pressure(let observation):
