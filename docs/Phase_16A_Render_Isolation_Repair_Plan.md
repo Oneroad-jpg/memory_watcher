@@ -7,15 +7,16 @@
 工程16A-Rは独立した公開工程ではなく、工程16A-10「負荷抑制と性能測定」の
 HOLD解消作業である。
 
-- 現在状態: **CPU性能条件HOLD・修復計画作成済み・完了未判定**
+- 現在状態: **CPU性能条件HOLD・修復計画はowner文書先行merge済み・実装完了未判定**
 - 目的: 5秒測定に追従する現在値と、低頻度で更新する履歴Chartsの描画責務を分離する。
 - 維持する条件: 単一ウインドウ、単一監視エンジン、5秒測定、12時間・24時間・3日履歴。
 - 対象外: CPU計算式、SQLiteスキーマ、保持期限、GPU、プロセス別解析、通知、通信。
 - 合格条件は変更しない。T21の各15分区間で平均CPU 1%未満を要求する。
 - 短時間の改善値、画面の見た目、テストPASSだけでHOLDを解除しない。
 
-本書の作成は実装完了、HOLD解除、コミット、PR、マージを意味しない。
-修復コードと本書は、工程16Aの全受入条件がPASSした後の単一コミットへ含める。
+本書の作成と文書先行mergeは、実装完了、HOLD解除、性能PASS、工程16A完了を意味しない。
+PR #18の文書3件はowner例外として先にmergeされた。残る修復コードと検証差分は、
+PR #18後の`main`を基点とする工程16Aの単一非merge commitへ含める。
 
 ## 1. 固定する設計境界
 
@@ -70,7 +71,7 @@ HOLD解消作業である。
 | R7. 自動回帰試験とUI行列 | 状態所有権、root identity、120回更新、5分境界、期間切替、開閉、1・8・16・32CPU、2画面サイズ、ライト・ダークを自動または決定的fixtureで検証する。 | 本書4章のR01〜R14がすべてPASS。既存T01〜T20、T22〜T24に退行がない。全単体テスト、strict format lint、Debug・ReleaseビルドがPASS。 |
 | R8. 5分予備性能判定 | Release版で60秒準備後、T19で最も重かった表示条件を5分測定する。5分自動履歴更新を測定区間に含め、0分と5分の累積CPU時間、単調時計、RSS、記録件数を取る。 | 平均CPUが1%未満、PID不変、説明不能な欠落0、履歴更新回数が仕様どおり。1%以上ならHOLDし、正式監査へ進まない。この試験だけでT21をPASSにしない。 |
 | R9. 正式T21実運転 | 同一Release版で60秒準備後、表示15分、続いて非表示15分を測定する。各区間の0・5・10・15分を記録する。 | 表示・非表示の各15分平均CPUがともに1%未満。PID不変、説明不能な測定欠落0、非表示時の新規自動履歴読込み0、SQLite整合性`ok`。T21がPASS。 |
-| R10. 最終検証・単一コミット・マージ | T01〜T24とR01〜R16を再実行し、公開漏洩・通信・通知を検査する。工程16Aの全差分を1個の非merge commitへまとめ、ready PR、merge、remote readbackを行う。 | 全試験PASS、未解決incident・HOLD 0。工程16Aブランチの非merge commitがちょうど1個。PR内容、merge commit、GitHub remote mainの対象ファイルとSHAを読戻して一致する。 |
+| R10. 最終検証・単一実装コミット・マージ | T01〜T24とR01〜R16を再実行し、公開漏洩・通信・通知を検査する。PR #18後の`main`を基点に、残る工程16Aの実装・検証差分を1個の非merge commitへまとめ、ready PR、merge、remote readbackを行う。 | 全試験PASS、未解決incident・HOLD 0。工程16A実装ブランチの非merge commitがちょうど1個。PR #18の文書mergeと最終実装PRを別の保存状態として識別し、最終PR内容、merge commit、GitHub remote mainの対象ファイルとSHAを読戻して一致する。 |
 
 ## 4. 修復工程の必須受入試験
 
@@ -91,7 +92,7 @@ HOLD解消作業である。
 | R13 | 表示15分の正式測定 | 平均CPU1%未満、欠落0、仕様外の履歴読込み0 |
 | R14 | 非表示15分の正式測定 | 平均CPU1%未満、欠落0、自動履歴読込み0 |
 | R15 | 全回帰・Release・lint・プライバシー検査 | 全検査PASS、Internet socket 0、通知・通信API追加0、SQLite `ok` |
-| R16 | commit・PR・merge・remote readback | 単一非merge commit、ready PR、merge commit、remote mainが一致 |
+| R16 | commit・PR・merge・remote readback | PR #18後の`main`を基点とする単一の非merge実装コミット、ready PR、merge commit、remote mainが一致 |
 
 ## 5. CPU測定と証拠の固定方法
 
@@ -122,21 +123,28 @@ mergeを停止する。
 HOLD時は、原因が特定できている変更だけを候補として保持する。閾値を緩めず、
 失敗した監査をPASSへ書き換えない。複数案の先回り実装や、別incidentの修正を混ぜない。
 
-ownerが文書レビュー用PRを明示的に要求した場合に限り、HOLD中でも次の条件で
-**文書専用Draft PR**を作成できる。
+### 6.1 PR #18のowner文書先行merge例外
 
-- `origin/main`から隔離したブランチを使い、修復計画文書以外を含めない。
-- PRをDraftのまま保持し、ready化・merge・工程完了判定を行わない。
-- HOLD中の実装ブランチ、非公開監査ログ、端末固有情報を混ぜない。
-- 最終工程16A PRの前にcloseまたは置換し、別マージとして履歴へ入れない。
+ownerの明示操作により、文書専用PR #18は工程16Aの実装より先にmergeされた。
+この事実を履歴の書換えやrevertで消さず、次の限定例外として扱う。
 
-この例外は文書レビュー経路だけを開く。実装再開、性能PASS、HOLD解除、最終commitの
-権限を与えない。
+- 対象はPR #18の文書3件だけとし、head commitは`4cb481f65b0e627da861097bb19eddfed8578a84`、
+  merge commitは`f3b507a86f1c3833dd0e9996c76fe6ec9393faee`とする。
+- 先行mergeが証明するのは計画文書の公開だけであり、コード実装、試験PASS、CPU HOLD解除、
+  工程16A完了を証明しない。
+- PR #18は工程16Aの最終実装コミット数に数えない。残る実装・検証差分を、PR #18後の
+  `main`から作る新しいphase branch上のちょうど1個の非merge commitへまとめる。
+- 最終実装PRはready PR、merge commit、remote readbackを改めて完了する。
+- 今後HOLD中に文書PRを作る場合はDraftを既定とし、mergeにはその都度ownerの明示例外と、
+  対象文書、非実装性、完了を意味しないことの記録を必要とする。
+
+このowner例外は文書の保存順だけを変更する。実装再開、性能閾値の緩和、HOLD解除、
+工程完了、次工程への進行権限を与えない。
 
 ## 7. 工程16A完了とマージの境界
 
-工程16A-Rだけを先に完了・マージしない。次の全条件を満たした場合に限り、
-工程16A全体をマージ可能とする。
+PR #18で工程16A-Rの計画文書だけが先にmergeされたが、工程16A-Rと工程16Aの実装は
+完了していない。次の全条件を満たした場合に限り、残る工程16A実装をマージ可能とする。
 
 - [ ] R0〜R10の完了条件をすべて満たす。
 - [ ] R01〜R16がすべてPASS。
@@ -146,8 +154,9 @@ ownerが文書レビュー用PRを明示的に要求した場合に限り、HOLD
 - [ ] 5秒測定、SQLite保存、UNKNOWN、sleep、12時間・24時間・3日表示に退行がない。
 - [ ] 全回帰テスト、Releaseビルド、strict format lint、公開漏洩検査がPASS。
 - [ ] 未解決incident、HOLD、説明不能な差が0。
-- [ ] 工程16Aの差分がちょうど1個の非merge commitにまとまっている。
-- [ ] ready PR、merge commit、GitHub remote readbackを順に確認している。
+- [ ] PR #18後の`main`を基点とする工程16Aの実装・検証差分が、ちょうど1個の
+  非merge commitにまとまっている。
+- [ ] 最終実装のready PR、merge commit、GitHub remote readbackを順に確認している。
 
 文書作成済み、コード実装済み、テストPASS、性能PASS、commit済み、PR作成済み、
 merge済み、remote readback済みは別々の状態として記録する。
