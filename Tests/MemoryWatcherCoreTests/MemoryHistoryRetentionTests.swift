@@ -5,7 +5,7 @@ import XCTest
 @testable import MemoryWatcherCore
 
 final class MemoryHistoryRetentionTests: XCTestCase {
-  func testVersionTwoDatabaseMigratesThroughVersionFourWithoutLosingRawSamples() throws {
+  func testVersionTwoDatabaseMigratesThroughVersionFiveWithoutLosingRawSamples() throws {
     let directory = try makeTemporaryDirectory()
     let databaseURL = directory.appendingPathComponent("migration.sqlite3")
     let preservedSample = sample(
@@ -21,7 +21,7 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     try convertVersionThreeFixtureToVersionTwo(at: databaseURL)
 
     let migrated = try MemoryWatcherDatabase(url: databaseURL)
-    XCTAssertEqual(try migrated.schemaVersion(), 4)
+    XCTAssertEqual(try migrated.schemaVersion(), 5)
     XCTAssertEqual(try migrated.fetchSamples(), [preservedSample])
     XCTAssertEqual(try migrated.aggregateCount(resolution: .oneMinute), 0)
     XCTAssertEqual(try migrated.aggregateCount(resolution: .fiveMinutes), 0)
@@ -29,7 +29,7 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     XCTAssertEqual(try migrated.integrityCheck(), "ok")
   }
 
-  func testVersionThreeDatabaseMigratesToVersionFourWithoutLosingMemoryHistory()
+  func testVersionThreeDatabaseMigratesToVersionFiveWithoutLosingMemoryHistory()
     throws
   {
     let directory = try makeTemporaryDirectory()
@@ -47,7 +47,7 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     try convertVersionFourFixtureToVersionThree(at: databaseURL)
 
     let migrated = try MemoryWatcherDatabase(url: databaseURL)
-    XCTAssertEqual(try migrated.schemaVersion(), 4)
+    XCTAssertEqual(try migrated.schemaVersion(), 5)
     XCTAssertEqual(try migrated.fetchSamples(), [preservedSample])
     XCTAssertEqual(try migrated.totalCPUSampleCount(), 0)
     XCTAssertEqual(try migrated.integrityCheck(), "ok")
@@ -279,6 +279,29 @@ final class MemoryHistoryRetentionTests: XCTestCase {
       idle: 50
     )
     try database.insert(totalCPUSamples: [cpuSample])
+    let logicalTopology = LogicalCPUTopology(
+      epochKey: "rollback-logical-1",
+      bootSessionStartUTC: Date(timeIntervalSince1970: 1),
+      logicalCPUCount: 1
+    )
+    let logicalSample = LogicalCPUSample(
+      topology: logicalTopology,
+      cpuIndex: 0,
+      intervalStartUTC: now.addingTimeInterval(-2 * 24 * 60 * 60 - 5),
+      intervalEndUTC: now.addingTimeInterval(-2 * 24 * 60 * 60),
+      intervalStartUptimeSeconds: 95,
+      intervalEndUptimeSeconds: 100,
+      delta: CPUCounterDelta(
+        userTicks: 20,
+        systemTicks: 10,
+        idleTicks: 70,
+        niceTicks: 0,
+        busyTicks: 30,
+        totalTicks: 100
+      ),
+      quality: .measured
+    )
+    try database.insert(logicalCPUSamples: [logicalSample])
 
     XCTAssertThrowsError(
       try database.performHistoryMaintenance(
@@ -299,6 +322,15 @@ final class MemoryHistoryRetentionTests: XCTestCase {
     )
     XCTAssertEqual(
       try database.totalCPUAggregateCount(resolution: .fiveMinutes),
+      0
+    )
+    XCTAssertEqual(try database.fetchLogicalCPUSamples(), [logicalSample])
+    XCTAssertEqual(
+      try database.logicalCPUAggregateCount(resolution: .oneMinute),
+      0
+    )
+    XCTAssertEqual(
+      try database.logicalCPUAggregateCount(resolution: .fiveMinutes),
       0
     )
     XCTAssertEqual(try database.integrityCheck(), "ok")
@@ -374,6 +406,7 @@ final class MemoryHistoryRetentionTests: XCTestCase {
   }
 
   private func convertVersionFourFixtureToVersionThree(at url: URL) throws {
+    try convertVersionFiveFixtureToVersionFour(at: url)
     try executeFixtureSQL(
       """
       DROP TABLE total_cpu_aggregates_5m;
@@ -381,6 +414,21 @@ final class MemoryHistoryRetentionTests: XCTestCase {
       DROP TABLE total_cpu_samples;
       DELETE FROM schema_migrations WHERE version = 4;
       PRAGMA user_version = 3;
+      """,
+      at: url
+    )
+  }
+
+  private func convertVersionFiveFixtureToVersionFour(at url: URL) throws {
+    try executeFixtureSQL(
+      """
+      DROP TABLE logical_cpu_aggregates_5m;
+      DROP TABLE logical_cpu_aggregates_1m;
+      DROP TABLE logical_cpu_sampling_gaps;
+      DROP TABLE logical_cpu_samples;
+      DROP TABLE logical_cpu_topologies;
+      DELETE FROM schema_migrations WHERE version = 5;
+      PRAGMA user_version = 4;
       """,
       at: url
     )

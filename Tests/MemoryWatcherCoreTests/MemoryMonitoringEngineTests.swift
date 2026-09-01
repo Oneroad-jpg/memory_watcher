@@ -256,6 +256,89 @@ final class MemoryMonitoringEngineTests: XCTestCase {
     )
   }
 
+  func testEachSamplingSlotPersistsLogicalCPUBatchOrGapWithoutAnotherTimer()
+    throws
+  {
+    let database = try makeDatabase()
+    let topology = Self.logicalTopology(count: 8)
+    let first = Self.logicalCPUBatch(
+      topology: topology,
+      timestamp: 40_000,
+      uptime: 38_000,
+      quality: .firstDeltaUnknown
+    )
+    let gap = LogicalCPUSamplingGap(
+      timestampUTC: Date(timeIntervalSince1970: 40_005),
+      systemUptimeSeconds: 38_005,
+      previousTopology: topology
+    )
+    let engine = makeEngine(
+      database: database,
+      sequence: MonitoringOutcomeSequence([
+        .sample(Self.sample(timestamp: 40_000, uptime: 38_000)),
+        .sample(Self.sample(timestamp: 40_005, uptime: 38_005)),
+      ]),
+      logicalCPUSequence: LogicalCPUSampleSequence([
+        .samples(first),
+        .gap(gap),
+      ])
+    )
+    defer { engine.stop() }
+
+    try engine.start()
+    XCTAssertTrue(engine.recordSampleNow())
+
+    XCTAssertEqual(try database.logicalCPUSampleCount(), 8)
+    XCTAssertEqual(try database.fetchLogicalCPUSamples(), first)
+    XCTAssertEqual(try database.fetchLogicalCPUSamplingGaps(), [gap])
+  }
+
+  func testLogicalCPUResetFollowsLaunchSleepAndWakeBoundaries() throws {
+    let database = try makeDatabase()
+    let resetRecorder = CPUResetRecorder()
+    let topology = Self.logicalTopology(count: 1)
+    let engine = makeEngine(
+      database: database,
+      sequence: MonitoringOutcomeSequence([
+        .sample(Self.sample(timestamp: 50_000, uptime: 48_000)),
+        .sample(Self.sample(timestamp: 50_065, uptime: 48_065)),
+      ]),
+      logicalCPUSequence: LogicalCPUSampleSequence([
+        .samples(
+          Self.logicalCPUBatch(
+            topology: topology,
+            timestamp: 50_000,
+            uptime: 48_000,
+            quality: .firstDeltaUnknown
+          )
+        ),
+        .samples(
+          Self.logicalCPUBatch(
+            topology: topology,
+            timestamp: 50_065,
+            uptime: 48_065,
+            quality: .wakeBoundary
+          )
+        ),
+      ]),
+      logicalResetRecorder: resetRecorder
+    )
+    defer { engine.stop() }
+
+    try engine.start()
+    engine.prepareForSleep()
+    engine.resumeAfterWake()
+
+    XCTAssertEqual(resetRecorder.values.count, 3)
+    XCTAssertNil(resetRecorder.values[0])
+    XCTAssertEqual(resetRecorder.values[1], .sleep)
+    XCTAssertEqual(resetRecorder.values[2], .wake)
+    XCTAssertEqual(
+      try database.fetchLogicalCPUSamples().map(\.quality),
+      [.firstDeltaUnknown, .wakeBoundary]
+    )
+  }
+
   private func makeEngine(
     database: MemoryWatcherDatabase,
     sequence: MonitoringOutcomeSequence,
@@ -264,7 +347,9 @@ final class MemoryMonitoringEngineTests: XCTestCase {
       uptime: 1_000
     ),
     totalCPUSequence: TotalCPUSampleSequence? = nil,
-    resetRecorder: CPUResetRecorder? = nil
+    resetRecorder: CPUResetRecorder? = nil,
+    logicalCPUSequence: LogicalCPUSampleSequence? = nil,
+    logicalResetRecorder: CPUResetRecorder? = nil
   ) -> MemoryMonitoringEngine {
     let totalCPUProvider: (@Sendable () -> TotalCPUSample)?
     if let totalCPUSequence {
@@ -280,6 +365,20 @@ final class MemoryMonitoringEngineTests: XCTestCase {
     } else {
       resetTotalCPUProvider = nil
     }
+    let logicalCPUProvider: (@Sendable () -> LogicalCPUSamplingOutcome)?
+    if let logicalCPUSequence {
+      logicalCPUProvider = { logicalCPUSequence.next() }
+    } else {
+      logicalCPUProvider = nil
+    }
+    let resetLogicalCPUProvider: (@Sendable (CPUIntervalContinuity?) -> Void)?
+    if let logicalResetRecorder {
+      resetLogicalCPUProvider = { continuity in
+        logicalResetRecorder.append(continuity)
+      }
+    } else {
+      resetLogicalCPUProvider = nil
+    }
     return MemoryMonitoringEngine(
       database: database,
       sampleProvider: { try sequence.next() },
@@ -287,7 +386,9 @@ final class MemoryMonitoringEngineTests: XCTestCase {
       uptimeProvider: { clock.uptime },
       sampleInterval: 3_600,
       totalCPUSampleProvider: totalCPUProvider,
-      resetTotalCPUSampler: resetTotalCPUProvider
+      resetTotalCPUSampler: resetTotalCPUProvider,
+      logicalCPUSampleProvider: logicalCPUProvider,
+      resetLogicalCPUSampler: resetLogicalCPUProvider
     )
   }
 
@@ -372,6 +473,34 @@ final class MemoryMonitoringEngineTests: XCTestCase {
       quality: .measured
     )
   }
+
+  private static func logicalTopology(count: Int) -> LogicalCPUTopology {
+    LogicalCPUTopology(
+      epochKey: "engine-logical-\(count)",
+      bootSessionStartUTC: Date(timeIntervalSince1970: 100),
+      logicalCPUCount: count
+    )
+  }
+
+  private static func logicalCPUBatch(
+    topology: LogicalCPUTopology,
+    timestamp: TimeInterval,
+    uptime: TimeInterval,
+    quality: CPUUtilizationQuality
+  ) -> [LogicalCPUSample] {
+    (0..<topology.logicalCPUCount).map { cpuIndex in
+      LogicalCPUSample(
+        topology: topology,
+        cpuIndex: cpuIndex,
+        intervalStartUTC: nil,
+        intervalEndUTC: Date(timeIntervalSince1970: timestamp),
+        intervalStartUptimeSeconds: nil,
+        intervalEndUptimeSeconds: uptime,
+        delta: nil,
+        quality: quality
+      )
+    }
+  }
 }
 
 private final class MonitoringOutcomeSequence: @unchecked Sendable {
@@ -436,6 +565,24 @@ private final class TotalCPUSampleSequence: @unchecked Sendable {
       precondition(index < samples.count)
       defer { index += 1 }
       return samples[index]
+    }
+  }
+}
+
+private final class LogicalCPUSampleSequence: @unchecked Sendable {
+  private let lock = NSLock()
+  private let outcomes: [LogicalCPUSamplingOutcome]
+  private var index = 0
+
+  init(_ outcomes: [LogicalCPUSamplingOutcome]) {
+    self.outcomes = outcomes
+  }
+
+  func next() -> LogicalCPUSamplingOutcome {
+    lock.withLock {
+      precondition(index < outcomes.count)
+      defer { index += 1 }
+      return outcomes[index]
     }
   }
 }

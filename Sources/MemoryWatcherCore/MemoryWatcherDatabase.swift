@@ -9,7 +9,7 @@ public enum MemoryWatcherDatabaseError: Error, Equatable, Sendable {
 }
 
 public final class MemoryWatcherDatabase: @unchecked Sendable {
-  public static let currentSchemaVersion: Int32 = 4
+  public static let currentSchemaVersion: Int32 = 5
 
   public let url: URL
 
@@ -435,6 +435,18 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
           ),
           operation: "upsert five-minute total CPU aggregates"
         )
+        let logicalCPUOneMinuteBucketsUpserted = try executeReturningChanges(
+          Self.upsertLogicalCPUOneMinuteAggregatesSQL(
+            completedBefore: completedMinuteCutoff
+          ),
+          operation: "upsert one-minute logical CPU aggregates"
+        )
+        let logicalCPUFiveMinuteBucketsUpserted = try executeReturningChanges(
+          Self.upsertLogicalCPUFiveMinuteAggregatesSQL(
+            completedBefore: completedFiveMinuteCutoff
+          ),
+          operation: "upsert five-minute logical CPU aggregates"
+        )
 
         try beforeSourceDeletion()
 
@@ -491,6 +503,26 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
           ),
           operation: "delete expired five-minute total CPU aggregates"
         )
+        let logicalCPURawSamplesDeleted = try executeReturningChanges(
+          Self.deleteLogicalCPURawSamplesSQL(olderThan: rawCutoff),
+          operation: "delete aggregated logical CPU samples"
+        )
+        let logicalCPUGapsDeleted = try executeReturningChanges(
+          Self.deleteLogicalCPUGapsSQL(olderThan: fiveMinuteCutoff),
+          operation: "delete expired logical CPU sampling gaps"
+        )
+        let logicalCPUOneMinuteBucketsDeleted = try executeReturningChanges(
+          Self.deleteLogicalCPUOneMinuteAggregatesSQL(
+            completedBefore: oneMinuteCutoff
+          ),
+          operation: "delete rolled-up one-minute logical CPU aggregates"
+        )
+        let logicalCPUFiveMinuteBucketsDeleted = try executeReturningChanges(
+          Self.deleteLogicalCPUFiveMinuteAggregatesSQL(
+            completedBefore: fiveMinuteCutoff
+          ),
+          operation: "delete expired five-minute logical CPU aggregates"
+        )
 
         return MemoryHistoryMaintenanceResult(
           oneMinuteBucketsUpserted: oneMinuteBucketsUpserted,
@@ -507,7 +539,17 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
             totalCPUFiveMinuteBucketsUpserted,
           totalCPURawSamplesDeleted: totalCPURawSamplesDeleted,
           totalCPUOneMinuteBucketsDeleted: totalCPUOneMinuteBucketsDeleted,
-          totalCPUFiveMinuteBucketsDeleted: totalCPUFiveMinuteBucketsDeleted
+          totalCPUFiveMinuteBucketsDeleted: totalCPUFiveMinuteBucketsDeleted,
+          logicalCPUOneMinuteBucketsUpserted:
+            logicalCPUOneMinuteBucketsUpserted,
+          logicalCPUFiveMinuteBucketsUpserted:
+            logicalCPUFiveMinuteBucketsUpserted,
+          logicalCPURawSamplesDeleted: logicalCPURawSamplesDeleted,
+          logicalCPUGapsDeleted: logicalCPUGapsDeleted,
+          logicalCPUOneMinuteBucketsDeleted:
+            logicalCPUOneMinuteBucketsDeleted,
+          logicalCPUFiveMinuteBucketsDeleted:
+            logicalCPUFiveMinuteBucketsDeleted
         )
       }
     }
@@ -707,6 +749,10 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       try migrateToVersion4()
       version = 4
     }
+    if version == 4 {
+      try migrateToVersion5()
+      version = 5
+    }
     guard version == Int64(Self.currentSchemaVersion) else {
       throw MemoryWatcherDatabaseError.unsupportedSchemaVersion(Int32(version))
     }
@@ -741,6 +787,14 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       try execute(Self.schemaVersion4SQL, operation: "create schema version 4")
       try recordMigration(version: 4)
       try execute("PRAGMA user_version = 4", operation: "set schema version 4")
+    }
+  }
+
+  private func migrateToVersion5() throws {
+    try transaction(operation: "migrate schema to version 5") {
+      try execute(Self.schemaVersion5SQL, operation: "create schema version 5")
+      try recordMigration(version: 5)
+      try execute("PRAGMA user_version = 5", operation: "set schema version 5")
     }
   }
 
@@ -856,6 +910,11 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
       "total_cpu_samples",
       "total_cpu_aggregates_1m",
       "total_cpu_aggregates_5m",
+      "logical_cpu_topologies",
+      "logical_cpu_samples",
+      "logical_cpu_sampling_gaps",
+      "logical_cpu_aggregates_1m",
+      "logical_cpu_aggregates_5m",
     ]
     guard allowedTables.contains(table) else {
       throw MemoryWatcherDatabaseError.invalidValue(field: "table")
@@ -2223,5 +2282,963 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
 
     CREATE INDEX total_cpu_samples_end_timestamp_index
       ON total_cpu_samples(interval_end_utc_microseconds);
+    """
+}
+
+extension MemoryWatcherDatabase {
+  public func insert(logicalCPUSamples: [LogicalCPUSample]) throws {
+    guard !logicalCPUSamples.isEmpty else { return }
+    try LogicalCPUSampleValidator.validate(batch: logicalCPUSamples)
+    try locked {
+      try transaction(operation: "insert logical CPU samples") {
+        let topologyID = try ensureTopology(logicalCPUSamples[0].topology)
+        let statement = try prepare(
+          Self.insertLogicalCPUSampleSQL,
+          operation: "prepare logical CPU sample insert"
+        )
+        defer { sqlite3_finalize(statement) }
+        for sample in logicalCPUSamples {
+          sqlite3_reset(statement)
+          sqlite3_clear_bindings(statement)
+          try bind(
+            logicalCPUSample: sample,
+            topologyID: topologyID,
+            to: statement
+          )
+          try stepDone(statement, operation: "insert logical CPU sample")
+        }
+      }
+    }
+  }
+
+  public func insert(logicalCPUGaps: [LogicalCPUSamplingGap]) throws {
+    guard !logicalCPUGaps.isEmpty else { return }
+    try locked {
+      try transaction(operation: "insert logical CPU sampling gaps") {
+        let statement = try prepare(
+          Self.insertLogicalCPUGapSQL,
+          operation: "prepare logical CPU sampling gap insert"
+        )
+        defer { sqlite3_finalize(statement) }
+        for gap in logicalCPUGaps {
+          try LogicalCPUSampleValidator.validate(gap)
+          let previousTopologyID = try gap.previousTopology.map(ensureTopology)
+          sqlite3_reset(statement)
+          sqlite3_clear_bindings(statement)
+          try bind(
+            logicalCPUGap: gap,
+            previousTopologyID: previousTopologyID,
+            to: statement
+          )
+          try stepDone(statement, operation: "insert logical CPU sampling gap")
+        }
+      }
+    }
+  }
+
+  public func logicalCPUTopologyCount() throws -> Int {
+    try locked { try countRows(in: "logical_cpu_topologies") }
+  }
+
+  public func logicalCPUSampleCount() throws -> Int {
+    try locked { try countRows(in: "logical_cpu_samples") }
+  }
+
+  public func logicalCPUSamplingGapCount() throws -> Int {
+    try locked { try countRows(in: "logical_cpu_sampling_gaps") }
+  }
+
+  public func logicalCPUAggregateCount(
+    resolution: MemoryHistoryResolution
+  ) throws -> Int {
+    try locked { try countRows(in: logicalCPUAggregateTable(for: resolution)) }
+  }
+
+  public func fetchLogicalCPUSamples() throws -> [LogicalCPUSample] {
+    try locked {
+      let statement = try prepare(
+        Self.selectLogicalCPUSamplesSQL,
+        operation: "prepare logical CPU sample read"
+      )
+      defer { sqlite3_finalize(statement) }
+      var samples: [LogicalCPUSample] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return samples }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(operation: "read logical CPU samples", code: code)
+        }
+        samples.append(try decodeLogicalCPUSample(from: statement))
+      }
+    }
+  }
+
+  public func fetchLogicalCPUSamplingGaps() throws
+    -> [LogicalCPUSamplingGap]
+  {
+    try locked {
+      let statement = try prepare(
+        Self.selectLogicalCPUGapsSQL,
+        operation: "prepare logical CPU sampling gap read"
+      )
+      defer { sqlite3_finalize(statement) }
+      var gaps: [LogicalCPUSamplingGap] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return gaps }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read logical CPU sampling gaps",
+            code: code
+          )
+        }
+        gaps.append(try decodeLogicalCPUGap(from: statement))
+      }
+    }
+  }
+
+  public func fetchLogicalCPUAggregates(
+    resolution: MemoryHistoryResolution
+  ) throws -> [LogicalCPUHistoryAggregate] {
+    try locked {
+      let statement = try prepare(
+        selectLogicalCPUAggregatesSQL(for: resolution),
+        operation: "prepare logical CPU aggregate read"
+      )
+      defer { sqlite3_finalize(statement) }
+      var aggregates: [LogicalCPUHistoryAggregate] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { return aggregates }
+        guard code == SQLITE_ROW else {
+          throw sqliteError(
+            operation: "read logical CPU aggregates",
+            code: code
+          )
+        }
+        aggregates.append(
+          try decodeLogicalCPUAggregate(
+            from: statement,
+            resolution: resolution
+          )
+        )
+      }
+    }
+  }
+
+  private func ensureTopology(_ topology: LogicalCPUTopology) throws -> Int64 {
+    try LogicalCPUSampleValidator.validate(topology)
+    let insert = try prepare(
+      Self.insertLogicalCPUTopologySQL,
+      operation: "prepare logical CPU topology insert"
+    )
+    defer { sqlite3_finalize(insert) }
+    try bind(
+      topology.epochKey,
+      at: 1,
+      to: insert,
+      operation: "bind logical CPU topology epoch"
+    )
+    try bind(
+      Self.microseconds(
+        since1970: topology.bootSessionStartUTC,
+        field: "logical CPU boot session"
+      ),
+      at: 2,
+      to: insert,
+      operation: "bind logical CPU boot session"
+    )
+    try bind(
+      Int64(topology.logicalCPUCount),
+      at: 3,
+      to: insert,
+      operation: "bind logical CPU count"
+    )
+    try stepDone(insert, operation: "insert logical CPU topology")
+
+    let select = try prepare(
+      Self.selectLogicalCPUTopologyIDSQL,
+      operation: "prepare logical CPU topology id read"
+    )
+    defer { sqlite3_finalize(select) }
+    try bind(
+      topology.epochKey,
+      at: 1,
+      to: select,
+      operation: "bind logical CPU topology lookup"
+    )
+    guard sqlite3_step(select) == SQLITE_ROW else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "read logical CPU topology id"
+      )
+    }
+    let id = sqlite3_column_int64(select, 0)
+    let storedBoot = sqlite3_column_int64(select, 1)
+    let storedCount = sqlite3_column_int64(select, 2)
+    let expectedBoot = try Self.microseconds(
+      since1970: topology.bootSessionStartUTC,
+      field: "logical CPU boot session"
+    )
+    guard
+      id > 0,
+      storedBoot == expectedBoot,
+      storedCount == Int64(topology.logicalCPUCount),
+      sqlite3_step(select) == SQLITE_DONE
+    else {
+      throw MemoryWatcherDatabaseError.invalidValue(
+        field: "logical CPU topology epoch"
+      )
+    }
+    return id
+  }
+
+  private func bind(
+    logicalCPUSample sample: LogicalCPUSample,
+    topologyID: Int64,
+    to statement: OpaquePointer
+  ) throws {
+    try bind(
+      topologyID,
+      at: 1,
+      to: statement,
+      operation: "bind logical CPU topology id"
+    )
+    try bind(
+      Int64(sample.cpuIndex),
+      at: 2,
+      to: statement,
+      operation: "bind logical CPU index"
+    )
+    try bindOptional(
+      try sample.intervalStartUTC.map {
+        try Self.microseconds(
+          since1970: $0,
+          field: "logical CPU interval start"
+        )
+      },
+      at: 3,
+      to: statement,
+      operation: "bind logical CPU interval start"
+    )
+    try bind(
+      Self.microseconds(
+        since1970: sample.intervalEndUTC,
+        field: "logical CPU interval end"
+      ),
+      at: 4,
+      to: statement,
+      operation: "bind logical CPU interval end"
+    )
+    try bindOptional(
+      try sample.intervalStartUptimeSeconds.map {
+        try Self.microseconds(
+          interval: $0,
+          field: "logical CPU interval start uptime"
+        )
+      },
+      at: 5,
+      to: statement,
+      operation: "bind logical CPU interval start uptime"
+    )
+    try bind(
+      Self.microseconds(
+        interval: sample.intervalEndUptimeSeconds,
+        field: "logical CPU interval end uptime"
+      ),
+      at: 6,
+      to: statement,
+      operation: "bind logical CPU interval end uptime"
+    )
+    let deltas: [(UInt64?, String)] = [
+      (sample.delta?.userTicks, "logical CPU user ticks"),
+      (sample.delta?.systemTicks, "logical CPU system ticks"),
+      (sample.delta?.idleTicks, "logical CPU idle ticks"),
+      (sample.delta?.niceTicks, "logical CPU nice ticks"),
+      (sample.delta?.busyTicks, "logical CPU busy ticks"),
+      (sample.delta?.totalTicks, "logical CPU total ticks"),
+    ]
+    for (offset, delta) in deltas.enumerated() {
+      try bindOptional(
+        delta.0,
+        field: delta.1,
+        at: Int32(offset + 7),
+        to: statement
+      )
+    }
+    try bind(
+      sample.calculationVersion,
+      at: 13,
+      to: statement,
+      operation: "bind logical CPU calculation version"
+    )
+    try bind(
+      sample.quality.rawValue,
+      at: 14,
+      to: statement,
+      operation: "bind logical CPU quality"
+    )
+  }
+
+  private func bind(
+    logicalCPUGap gap: LogicalCPUSamplingGap,
+    previousTopologyID: Int64?,
+    to statement: OpaquePointer
+  ) throws {
+    try bind(
+      Self.microseconds(
+        since1970: gap.timestampUTC,
+        field: "logical CPU gap timestamp"
+      ),
+      at: 1,
+      to: statement,
+      operation: "bind logical CPU gap timestamp"
+    )
+    try bind(
+      Self.microseconds(
+        interval: gap.systemUptimeSeconds,
+        field: "logical CPU gap uptime"
+      ),
+      at: 2,
+      to: statement,
+      operation: "bind logical CPU gap uptime"
+    )
+    try bindOptional(
+      previousTopologyID,
+      at: 3,
+      to: statement,
+      operation: "bind logical CPU previous topology"
+    )
+    try bind(
+      gap.quality.rawValue,
+      at: 4,
+      to: statement,
+      operation: "bind logical CPU gap quality"
+    )
+  }
+}
+
+extension MemoryWatcherDatabase {
+  private func logicalCPUAggregateTable(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    switch resolution {
+    case .oneMinute:
+      return "logical_cpu_aggregates_1m"
+    case .fiveMinutes:
+      return "logical_cpu_aggregates_5m"
+    }
+  }
+
+  private func selectLogicalCPUAggregatesSQL(
+    for resolution: MemoryHistoryResolution
+  ) -> String {
+    """
+    SELECT
+      topology.epoch_key,
+      topology.boot_session_start_utc_microseconds,
+      topology.logical_cpu_count,
+      aggregate.cpu_index,
+      aggregate.bucket_start_utc_microseconds,
+      aggregate.sample_count,
+      aggregate.summed_user_ticks,
+      aggregate.summed_system_ticks,
+      aggregate.summed_idle_ticks,
+      aggregate.summed_nice_ticks,
+      aggregate.summed_busy_ticks,
+      aggregate.summed_total_ticks,
+      aggregate.calculation_version
+    FROM \(logicalCPUAggregateTable(for: resolution)) AS aggregate
+    JOIN logical_cpu_topologies AS topology
+      ON topology.id = aggregate.topology_id
+    ORDER BY
+      aggregate.bucket_start_utc_microseconds,
+      topology.id,
+      aggregate.cpu_index
+    """
+  }
+
+  private func decodeLogicalCPUSample(
+    from statement: OpaquePointer
+  ) throws -> LogicalCPUSample {
+    let topology = try decodeLogicalCPUTopology(
+      epochColumn: 0,
+      bootColumn: 1,
+      countColumn: 2,
+      from: statement
+    )
+    guard
+      let cpuIndex = Int(exactly: sqlite3_column_int64(statement, 3)),
+      let calculationVersion = text(at: 14, from: statement),
+      let qualityText = text(at: 15, from: statement),
+      let quality = CPUUtilizationQuality(rawValue: qualityText)
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode logical CPU sample"
+      )
+    }
+
+    let delta: CPUCounterDelta?
+    if quality == .measured {
+      let ticks = try (8...13).map {
+        try optionalUnsigned(at: Int32($0), from: statement)
+      }
+      guard ticks.allSatisfy({ $0 != nil }) else {
+        throw MemoryWatcherDatabaseError.unexpectedRow(
+          operation: "decode measured logical CPU sample"
+        )
+      }
+      delta = CPUCounterDelta(
+        userTicks: ticks[0]!,
+        systemTicks: ticks[1]!,
+        idleTicks: ticks[2]!,
+        niceTicks: ticks[3]!,
+        busyTicks: ticks[4]!,
+        totalTicks: ticks[5]!
+      )
+    } else {
+      guard
+        (8...13).allSatisfy({
+          sqlite3_column_type(statement, Int32($0)) == SQLITE_NULL
+        })
+      else {
+        throw MemoryWatcherDatabaseError.unexpectedRow(
+          operation: "decode unknown logical CPU sample"
+        )
+      }
+      delta = nil
+    }
+
+    let startUTC = optionalInt64(at: 4, from: statement)
+    let startUptime = optionalInt64(at: 6, from: statement)
+    let sample = LogicalCPUSample(
+      topology: topology,
+      cpuIndex: cpuIndex,
+      intervalStartUTC: startUTC.map(Self.date(fromMicroseconds:)),
+      intervalEndUTC: Self.date(
+        fromMicroseconds: sqlite3_column_int64(statement, 5)
+      ),
+      intervalStartUptimeSeconds: startUptime.map(
+        Self.interval(fromMicroseconds:)
+      ),
+      intervalEndUptimeSeconds: Self.interval(
+        fromMicroseconds: sqlite3_column_int64(statement, 7)
+      ),
+      delta: delta,
+      calculationVersion: calculationVersion,
+      quality: quality
+    )
+    try LogicalCPUSampleValidator.validate(sample)
+    return sample
+  }
+
+  private func decodeLogicalCPUGap(
+    from statement: OpaquePointer
+  ) throws -> LogicalCPUSamplingGap {
+    guard
+      let qualityText = text(at: 2, from: statement),
+      let quality = CPUUtilizationQuality(rawValue: qualityText)
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode logical CPU sampling gap"
+      )
+    }
+    let topology: LogicalCPUTopology?
+    if sqlite3_column_type(statement, 3) == SQLITE_NULL {
+      topology = nil
+    } else {
+      topology = try decodeLogicalCPUTopology(
+        epochColumn: 3,
+        bootColumn: 4,
+        countColumn: 5,
+        from: statement
+      )
+    }
+    let gap = LogicalCPUSamplingGap(
+      timestampUTC: Self.date(
+        fromMicroseconds: sqlite3_column_int64(statement, 0)
+      ),
+      systemUptimeSeconds: Self.interval(
+        fromMicroseconds: sqlite3_column_int64(statement, 1)
+      ),
+      previousTopology: topology,
+      quality: quality
+    )
+    try LogicalCPUSampleValidator.validate(gap)
+    return gap
+  }
+
+  private func decodeLogicalCPUAggregate(
+    from statement: OpaquePointer,
+    resolution: MemoryHistoryResolution
+  ) throws -> LogicalCPUHistoryAggregate {
+    let topology = try decodeLogicalCPUTopology(
+      epochColumn: 0,
+      bootColumn: 1,
+      countColumn: 2,
+      from: statement
+    )
+    guard
+      let cpuIndex = Int(exactly: sqlite3_column_int64(statement, 3)),
+      cpuIndex >= 0,
+      cpuIndex < topology.logicalCPUCount,
+      let sampleCount = Int(exactly: sqlite3_column_int64(statement, 5)),
+      sampleCount > 0,
+      let calculationVersion = text(at: 12, from: statement)
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode logical CPU aggregate"
+      )
+    }
+    let ticks = try (6...11).map {
+      try unsigned(at: Int32($0), from: statement)
+    }
+    let busy = ticks[0].addingReportingOverflow(ticks[1])
+    let busyWithNice = busy.partialValue.addingReportingOverflow(ticks[3])
+    let total = ticks[4].addingReportingOverflow(ticks[2])
+    guard
+      !busy.overflow,
+      !busyWithNice.overflow,
+      !total.overflow,
+      busyWithNice.partialValue == ticks[4],
+      total.partialValue == ticks[5],
+      ticks[5] > 0
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode logical CPU aggregate tick relationship"
+      )
+    }
+    return LogicalCPUHistoryAggregate(
+      resolution: resolution,
+      topology: topology,
+      cpuIndex: cpuIndex,
+      bucketStartUTC: Self.date(
+        fromMicroseconds: sqlite3_column_int64(statement, 4)
+      ),
+      sampleCount: sampleCount,
+      summedUserTicks: ticks[0],
+      summedSystemTicks: ticks[1],
+      summedIdleTicks: ticks[2],
+      summedNiceTicks: ticks[3],
+      summedBusyTicks: ticks[4],
+      summedTotalTicks: ticks[5],
+      calculationVersion: calculationVersion
+    )
+  }
+
+  private func decodeLogicalCPUTopology(
+    epochColumn: Int32,
+    bootColumn: Int32,
+    countColumn: Int32,
+    from statement: OpaquePointer
+  ) throws -> LogicalCPUTopology {
+    guard
+      let epochKey = text(at: epochColumn, from: statement),
+      let count = Int(exactly: sqlite3_column_int64(statement, countColumn))
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "decode logical CPU topology"
+      )
+    }
+    let topology = LogicalCPUTopology(
+      epochKey: epochKey,
+      bootSessionStartUTC: Self.date(
+        fromMicroseconds: sqlite3_column_int64(statement, bootColumn)
+      ),
+      logicalCPUCount: count
+    )
+    try LogicalCPUSampleValidator.validate(topology)
+    return topology
+  }
+}
+
+extension MemoryWatcherDatabase {
+  private static let insertLogicalCPUTopologySQL = """
+    INSERT INTO logical_cpu_topologies(
+      epoch_key,
+      boot_session_start_utc_microseconds,
+      logical_cpu_count
+    ) VALUES (?, ?, ?)
+    ON CONFLICT(epoch_key) DO NOTHING
+    """
+
+  private static let selectLogicalCPUTopologyIDSQL = """
+    SELECT id, boot_session_start_utc_microseconds, logical_cpu_count
+    FROM logical_cpu_topologies
+    WHERE epoch_key = ?
+    """
+
+  private static let insertLogicalCPUSampleSQL = """
+    INSERT INTO logical_cpu_samples(
+      topology_id,
+      cpu_index,
+      interval_start_utc_microseconds,
+      interval_end_utc_microseconds,
+      interval_start_uptime_microseconds,
+      interval_end_uptime_microseconds,
+      user_ticks,
+      system_ticks,
+      idle_ticks,
+      nice_ticks,
+      busy_ticks,
+      total_ticks,
+      calculation_version,
+      quality
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+  private static let insertLogicalCPUGapSQL = """
+    INSERT INTO logical_cpu_sampling_gaps(
+      timestamp_utc_microseconds,
+      system_uptime_microseconds,
+      previous_topology_id,
+      quality
+    ) VALUES (?, ?, ?, ?)
+    """
+
+  private static let selectLogicalCPUSamplesSQL = """
+    SELECT
+      topology.epoch_key,
+      topology.boot_session_start_utc_microseconds,
+      topology.logical_cpu_count,
+      sample.cpu_index,
+      sample.interval_start_utc_microseconds,
+      sample.interval_end_utc_microseconds,
+      sample.interval_start_uptime_microseconds,
+      sample.interval_end_uptime_microseconds,
+      sample.user_ticks,
+      sample.system_ticks,
+      sample.idle_ticks,
+      sample.nice_ticks,
+      sample.busy_ticks,
+      sample.total_ticks,
+      sample.calculation_version,
+      sample.quality
+    FROM logical_cpu_samples AS sample
+    JOIN logical_cpu_topologies AS topology
+      ON topology.id = sample.topology_id
+    ORDER BY
+      sample.interval_end_utc_microseconds,
+      sample.interval_end_uptime_microseconds,
+      topology.id,
+      sample.cpu_index
+    """
+
+  private static let selectLogicalCPUGapsSQL = """
+    SELECT
+      gap.timestamp_utc_microseconds,
+      gap.system_uptime_microseconds,
+      gap.quality,
+      topology.epoch_key,
+      topology.boot_session_start_utc_microseconds,
+      topology.logical_cpu_count
+    FROM logical_cpu_sampling_gaps AS gap
+    LEFT JOIN logical_cpu_topologies AS topology
+      ON topology.id = gap.previous_topology_id
+    ORDER BY gap.timestamp_utc_microseconds, gap.system_uptime_microseconds
+    """
+
+  private static func upsertLogicalCPUOneMinuteAggregatesSQL(
+    completedBefore: Int64
+  ) -> String {
+    """
+    INSERT INTO logical_cpu_aggregates_1m(
+      topology_id,
+      cpu_index,
+      bucket_start_utc_microseconds,
+      sample_count,
+      summed_user_ticks,
+      summed_system_ticks,
+      summed_idle_ticks,
+      summed_nice_ticks,
+      summed_busy_ticks,
+      summed_total_ticks,
+      calculation_version
+    )
+    SELECT
+      topology_id,
+      cpu_index,
+      (interval_end_utc_microseconds - 1) / \(oneMinuteMicroseconds)
+        * \(oneMinuteMicroseconds),
+      COUNT(*),
+      SUM(user_ticks),
+      SUM(system_ticks),
+      SUM(idle_ticks),
+      SUM(nice_ticks),
+      SUM(busy_ticks),
+      SUM(total_ticks),
+      MAX(calculation_version)
+    FROM logical_cpu_samples
+    WHERE quality = 'measured'
+      AND interval_end_utc_microseconds <= \(completedBefore)
+    GROUP BY
+      topology_id,
+      cpu_index,
+      (interval_end_utc_microseconds - 1) / \(oneMinuteMicroseconds)
+    ON CONFLICT(topology_id, cpu_index, bucket_start_utc_microseconds)
+    DO UPDATE SET
+      sample_count = excluded.sample_count,
+      summed_user_ticks = excluded.summed_user_ticks,
+      summed_system_ticks = excluded.summed_system_ticks,
+      summed_idle_ticks = excluded.summed_idle_ticks,
+      summed_nice_ticks = excluded.summed_nice_ticks,
+      summed_busy_ticks = excluded.summed_busy_ticks,
+      summed_total_ticks = excluded.summed_total_ticks,
+      calculation_version = excluded.calculation_version
+    """
+  }
+
+  private static func upsertLogicalCPUFiveMinuteAggregatesSQL(
+    completedBefore: Int64
+  ) -> String {
+    """
+    INSERT INTO logical_cpu_aggregates_5m(
+      topology_id,
+      cpu_index,
+      bucket_start_utc_microseconds,
+      sample_count,
+      summed_user_ticks,
+      summed_system_ticks,
+      summed_idle_ticks,
+      summed_nice_ticks,
+      summed_busy_ticks,
+      summed_total_ticks,
+      calculation_version
+    )
+    SELECT
+      topology_id,
+      cpu_index,
+      bucket_start_utc_microseconds / \(fiveMinuteMicroseconds)
+        * \(fiveMinuteMicroseconds),
+      SUM(sample_count),
+      SUM(summed_user_ticks),
+      SUM(summed_system_ticks),
+      SUM(summed_idle_ticks),
+      SUM(summed_nice_ticks),
+      SUM(summed_busy_ticks),
+      SUM(summed_total_ticks),
+      MAX(calculation_version)
+    FROM logical_cpu_aggregates_1m
+    WHERE bucket_start_utc_microseconds < \(completedBefore)
+    GROUP BY
+      topology_id,
+      cpu_index,
+      bucket_start_utc_microseconds / \(fiveMinuteMicroseconds)
+    ON CONFLICT(topology_id, cpu_index, bucket_start_utc_microseconds)
+    DO UPDATE SET
+      sample_count = excluded.sample_count,
+      summed_user_ticks = excluded.summed_user_ticks,
+      summed_system_ticks = excluded.summed_system_ticks,
+      summed_idle_ticks = excluded.summed_idle_ticks,
+      summed_nice_ticks = excluded.summed_nice_ticks,
+      summed_busy_ticks = excluded.summed_busy_ticks,
+      summed_total_ticks = excluded.summed_total_ticks,
+      calculation_version = excluded.calculation_version
+    """
+  }
+
+  private static func deleteLogicalCPURawSamplesSQL(
+    olderThan cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM logical_cpu_samples
+    WHERE interval_end_utc_microseconds < \(cutoff)
+      AND (
+        quality != 'measured'
+        OR EXISTS(
+          SELECT 1
+          FROM logical_cpu_aggregates_1m AS aggregate
+          WHERE aggregate.topology_id = logical_cpu_samples.topology_id
+            AND aggregate.cpu_index = logical_cpu_samples.cpu_index
+            AND aggregate.bucket_start_utc_microseconds =
+              (logical_cpu_samples.interval_end_utc_microseconds - 1)
+                / \(oneMinuteMicroseconds) * \(oneMinuteMicroseconds)
+        )
+      )
+    """
+  }
+
+  private static func deleteLogicalCPUGapsSQL(
+    olderThan cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM logical_cpu_sampling_gaps
+    WHERE timestamp_utc_microseconds < \(cutoff)
+    """
+  }
+
+  private static func deleteLogicalCPUOneMinuteAggregatesSQL(
+    completedBefore cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM logical_cpu_aggregates_1m
+    WHERE bucket_start_utc_microseconds + \(oneMinuteMicroseconds) <= \(cutoff)
+      AND EXISTS(
+        SELECT 1
+        FROM logical_cpu_aggregates_5m AS aggregate
+        WHERE aggregate.topology_id = logical_cpu_aggregates_1m.topology_id
+          AND aggregate.cpu_index = logical_cpu_aggregates_1m.cpu_index
+          AND aggregate.bucket_start_utc_microseconds =
+            logical_cpu_aggregates_1m.bucket_start_utc_microseconds
+              / \(fiveMinuteMicroseconds) * \(fiveMinuteMicroseconds)
+      )
+    """
+  }
+
+  private static func deleteLogicalCPUFiveMinuteAggregatesSQL(
+    completedBefore cutoff: Int64
+  ) -> String {
+    """
+    DELETE FROM logical_cpu_aggregates_5m
+    WHERE bucket_start_utc_microseconds + \(fiveMinuteMicroseconds) <= \(cutoff)
+    """
+  }
+
+  private static let schemaVersion5SQL = """
+    CREATE TABLE logical_cpu_topologies(
+      id INTEGER PRIMARY KEY,
+      epoch_key TEXT NOT NULL UNIQUE
+        CHECK(length(epoch_key) > 0 AND length(epoch_key) <= 200),
+      boot_session_start_utc_microseconds INTEGER NOT NULL
+        CHECK(boot_session_start_utc_microseconds >= 0),
+      logical_cpu_count INTEGER NOT NULL
+        CHECK(logical_cpu_count > 0 AND logical_cpu_count <= 4096)
+    );
+
+    CREATE TABLE logical_cpu_samples(
+      id INTEGER PRIMARY KEY,
+      topology_id INTEGER NOT NULL
+        REFERENCES logical_cpu_topologies(id),
+      cpu_index INTEGER NOT NULL CHECK(cpu_index >= 0),
+      interval_start_utc_microseconds INTEGER
+        CHECK(interval_start_utc_microseconds >= 0),
+      interval_end_utc_microseconds INTEGER NOT NULL
+        CHECK(interval_end_utc_microseconds >= 0),
+      interval_start_uptime_microseconds INTEGER
+        CHECK(interval_start_uptime_microseconds >= 0),
+      interval_end_uptime_microseconds INTEGER NOT NULL
+        CHECK(interval_end_uptime_microseconds >= 0),
+      user_ticks INTEGER CHECK(user_ticks >= 0),
+      system_ticks INTEGER CHECK(system_ticks >= 0),
+      idle_ticks INTEGER CHECK(idle_ticks >= 0),
+      nice_ticks INTEGER CHECK(nice_ticks >= 0),
+      busy_ticks INTEGER CHECK(busy_ticks >= 0),
+      total_ticks INTEGER CHECK(total_ticks > 0),
+      calculation_version TEXT NOT NULL CHECK(length(calculation_version) > 0),
+      quality TEXT NOT NULL CHECK(
+        quality IN (
+          'measured',
+          'firstDeltaUnknown',
+          'sleepBoundary',
+          'wakeBoundary',
+          'rebootBoundary',
+          'clockChangeBoundary',
+          'topologyChangeBoundary',
+          'intervalOutOfRange',
+          'unavailable',
+          'counterRegression',
+          'noTickProgress',
+          'arithmeticOverflow'
+        )
+      ),
+      CHECK(
+        (
+          quality = 'measured'
+          AND interval_start_utc_microseconds IS NOT NULL
+          AND interval_start_uptime_microseconds IS NOT NULL
+          AND interval_end_utc_microseconds >= interval_start_utc_microseconds
+          AND interval_end_uptime_microseconds > interval_start_uptime_microseconds
+          AND user_ticks IS NOT NULL
+          AND system_ticks IS NOT NULL
+          AND idle_ticks IS NOT NULL
+          AND nice_ticks IS NOT NULL
+          AND busy_ticks = user_ticks + system_ticks + nice_ticks
+          AND total_ticks = busy_ticks + idle_ticks
+        )
+        OR (
+          quality != 'measured'
+          AND interval_start_utc_microseconds IS NULL
+          AND interval_start_uptime_microseconds IS NULL
+          AND user_ticks IS NULL
+          AND system_ticks IS NULL
+          AND idle_ticks IS NULL
+          AND nice_ticks IS NULL
+          AND busy_ticks IS NULL
+          AND total_ticks IS NULL
+        )
+      ),
+      UNIQUE(
+        topology_id,
+        cpu_index,
+        interval_end_utc_microseconds,
+        interval_end_uptime_microseconds
+      )
+    );
+
+    CREATE TABLE logical_cpu_sampling_gaps(
+      id INTEGER PRIMARY KEY,
+      timestamp_utc_microseconds INTEGER NOT NULL
+        CHECK(timestamp_utc_microseconds >= 0),
+      system_uptime_microseconds INTEGER NOT NULL
+        CHECK(system_uptime_microseconds >= 0),
+      previous_topology_id INTEGER
+        REFERENCES logical_cpu_topologies(id),
+      quality TEXT NOT NULL CHECK(quality = 'unavailable'),
+      UNIQUE(timestamp_utc_microseconds, system_uptime_microseconds)
+    );
+
+    CREATE TABLE logical_cpu_aggregates_1m(
+      topology_id INTEGER NOT NULL
+        REFERENCES logical_cpu_topologies(id),
+      cpu_index INTEGER NOT NULL CHECK(cpu_index >= 0),
+      bucket_start_utc_microseconds INTEGER NOT NULL CHECK(
+        bucket_start_utc_microseconds >= 0
+        AND bucket_start_utc_microseconds % 60000000 = 0
+      ),
+      sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+      summed_user_ticks INTEGER NOT NULL CHECK(summed_user_ticks >= 0),
+      summed_system_ticks INTEGER NOT NULL CHECK(summed_system_ticks >= 0),
+      summed_idle_ticks INTEGER NOT NULL CHECK(summed_idle_ticks >= 0),
+      summed_nice_ticks INTEGER NOT NULL CHECK(summed_nice_ticks >= 0),
+      summed_busy_ticks INTEGER NOT NULL CHECK(
+        summed_busy_ticks = summed_user_ticks + summed_system_ticks
+          + summed_nice_ticks
+      ),
+      summed_total_ticks INTEGER NOT NULL CHECK(
+        summed_total_ticks = summed_busy_ticks + summed_idle_ticks
+        AND summed_total_ticks > 0
+      ),
+      calculation_version TEXT NOT NULL CHECK(length(calculation_version) > 0),
+      PRIMARY KEY(topology_id, cpu_index, bucket_start_utc_microseconds)
+    ) WITHOUT ROWID;
+
+    CREATE TABLE logical_cpu_aggregates_5m(
+      topology_id INTEGER NOT NULL
+        REFERENCES logical_cpu_topologies(id),
+      cpu_index INTEGER NOT NULL CHECK(cpu_index >= 0),
+      bucket_start_utc_microseconds INTEGER NOT NULL CHECK(
+        bucket_start_utc_microseconds >= 0
+        AND bucket_start_utc_microseconds % 300000000 = 0
+      ),
+      sample_count INTEGER NOT NULL CHECK(sample_count > 0),
+      summed_user_ticks INTEGER NOT NULL CHECK(summed_user_ticks >= 0),
+      summed_system_ticks INTEGER NOT NULL CHECK(summed_system_ticks >= 0),
+      summed_idle_ticks INTEGER NOT NULL CHECK(summed_idle_ticks >= 0),
+      summed_nice_ticks INTEGER NOT NULL CHECK(summed_nice_ticks >= 0),
+      summed_busy_ticks INTEGER NOT NULL CHECK(
+        summed_busy_ticks = summed_user_ticks + summed_system_ticks
+          + summed_nice_ticks
+      ),
+      summed_total_ticks INTEGER NOT NULL CHECK(
+        summed_total_ticks = summed_busy_ticks + summed_idle_ticks
+        AND summed_total_ticks > 0
+      ),
+      calculation_version TEXT NOT NULL CHECK(length(calculation_version) > 0),
+      PRIMARY KEY(topology_id, cpu_index, bucket_start_utc_microseconds)
+    ) WITHOUT ROWID;
+
+    CREATE INDEX logical_cpu_samples_end_timestamp_index
+      ON logical_cpu_samples(interval_end_utc_microseconds);
+    CREATE INDEX logical_cpu_sampling_gaps_timestamp_index
+      ON logical_cpu_sampling_gaps(timestamp_utc_microseconds);
     """
 }

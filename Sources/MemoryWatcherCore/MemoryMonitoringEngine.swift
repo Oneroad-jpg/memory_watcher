@@ -14,6 +14,7 @@ public enum MemoryMonitoringEngineError: Error, Equatable, Sendable {
 public enum MemoryMonitoringEvent: Sendable {
   case sample(MemorySample)
   case totalCPU(TotalCPUSample)
+  case logicalCPU(LogicalCPUSamplingOutcome)
   case gap(MemorySamplingGap)
   case pressure(MemoryPressureObservation)
   case lifecycle(SystemLifecycleEvent)
@@ -29,6 +30,8 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
   private let uptimeProvider: @Sendable () -> TimeInterval
   private let totalCPUSampleProvider: (@Sendable () -> TotalCPUSample)?
   private let resetTotalCPUSampler: (@Sendable (CPUIntervalContinuity?) -> Void)?
+  private let logicalCPUSampleProvider: (@Sendable () -> LogicalCPUSamplingOutcome)?
+  private let resetLogicalCPUSampler: (@Sendable (CPUIntervalContinuity?) -> Void)?
   private let eventHandler: EventHandler
   private let pressureMonitor: MemoryPressureMonitor
   private let sampleInterval: TimeInterval
@@ -45,6 +48,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
     eventHandler: @escaping EventHandler = { _ in }
   ) {
     let totalCPUSampler = SystemTotalCPUSampler()
+    let logicalCPUSampler = SystemLogicalCPUSampler()
     self.database = database
     sampleProvider = { try SystemMemorySampler().sampleOutcome() }
     timestampProvider = { Date() }
@@ -55,6 +59,14 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
         totalCPUSampler.reset(for: continuity)
       } else {
         totalCPUSampler.reset()
+      }
+    }
+    logicalCPUSampleProvider = { logicalCPUSampler.sample() }
+    resetLogicalCPUSampler = { continuity in
+      if let continuity {
+        logicalCPUSampler.reset(for: continuity)
+      } else {
+        logicalCPUSampler.reset()
       }
     }
     self.eventHandler = eventHandler
@@ -73,6 +85,10 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
     sampleInterval: TimeInterval = MemoryWatcherFoundation.sampleInterval,
     totalCPUSampleProvider: (@Sendable () -> TotalCPUSample)? = nil,
     resetTotalCPUSampler: (@Sendable (CPUIntervalContinuity?) -> Void)? = nil,
+    logicalCPUSampleProvider:
+      (@Sendable () -> LogicalCPUSamplingOutcome)? = nil,
+    resetLogicalCPUSampler:
+      (@Sendable (CPUIntervalContinuity?) -> Void)? = nil,
     eventHandler: @escaping EventHandler = { _ in }
   ) {
     precondition(sampleInterval > 0)
@@ -82,6 +98,8 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
     self.uptimeProvider = uptimeProvider
     self.totalCPUSampleProvider = totalCPUSampleProvider
     self.resetTotalCPUSampler = resetTotalCPUSampler
+    self.logicalCPUSampleProvider = logicalCPUSampleProvider
+    self.resetLogicalCPUSampler = resetLogicalCPUSampler
     self.eventHandler = eventHandler
     self.pressureMonitor = pressureMonitor
     self.sampleInterval = sampleInterval
@@ -112,8 +130,10 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
         )
       }
       resetTotalCPUSampler?(nil)
+      resetLogicalCPUSampler?(nil)
       if launchEvents.contains(where: { $0.kind == .rebootDetected }) {
         resetTotalCPUSampler?(.reboot)
+        resetLogicalCPUSampler?(.reboot)
       }
       try database.insert(lifecycleEvents: launchEvents)
       for event in launchEvents {
@@ -147,6 +167,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       cancelTimer()
       runState = .sleeping
       resetTotalCPUSampler?(.sleep)
+      resetLogicalCPUSampler?(.sleep)
       lastSampleAnchor = nil
       let event = lifecycleEvent(kind: .sleep)
       do {
@@ -165,6 +186,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       }
       runState = .running
       resetTotalCPUSampler?(.wake)
+      resetLogicalCPUSampler?(.wake)
       lastSampleAnchor = nil
       lastHistoryMaintenanceUptime = nil
       let event = lifecycleEvent(kind: .wake)
@@ -194,6 +216,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       lastSampleAnchor = nil
       lastHistoryMaintenanceUptime = nil
       resetTotalCPUSampler?(.clockChange)
+      resetLogicalCPUSampler?(.clockChange)
     }
   }
 
@@ -269,6 +292,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
           try database.insert(lifecycleEvents: [event])
           eventHandler(.lifecycle(event))
           resetTotalCPUSampler?(.clockChange)
+          resetLogicalCPUSampler?(.clockChange)
         }
         try database.insert(samples: [sample])
         self.lastSampleAnchor = current
@@ -297,6 +321,33 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
             systemUptimeSeconds: cpuSample.intervalEndUptimeSeconds
           )
         }
+      } catch {
+        eventHandler(.failure(String(describing: error)))
+      }
+    }
+
+    if let logicalCPUSampleProvider {
+      let outcome = logicalCPUSampleProvider()
+      do {
+        switch outcome {
+        case .samples(let samples):
+          try database.insert(logicalCPUSamples: samples)
+          if maintenanceAnchor == nil, let first = samples.first {
+            maintenanceAnchor = SystemTimelineAnchor(
+              timestampUTC: first.intervalEndUTC,
+              systemUptimeSeconds: first.intervalEndUptimeSeconds
+            )
+          }
+        case .gap(let gap):
+          try database.insert(logicalCPUGaps: [gap])
+          if maintenanceAnchor == nil {
+            maintenanceAnchor = SystemTimelineAnchor(
+              timestampUTC: gap.timestampUTC,
+              systemUptimeSeconds: gap.systemUptimeSeconds
+            )
+          }
+        }
+        eventHandler(.logicalCPU(outcome))
       } catch {
         eventHandler(.failure(String(describing: error)))
       }
