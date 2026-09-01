@@ -13,6 +13,7 @@ public enum MemoryMonitoringEngineError: Error, Equatable, Sendable {
 
 public enum MemoryMonitoringEvent: Sendable {
   case sample(MemorySample)
+  case totalCPU(TotalCPUSample)
   case gap(MemorySamplingGap)
   case pressure(MemoryPressureObservation)
   case lifecycle(SystemLifecycleEvent)
@@ -26,6 +27,8 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
   private let sampleProvider: @Sendable () throws -> MemorySamplingOutcome
   private let timestampProvider: @Sendable () -> Date
   private let uptimeProvider: @Sendable () -> TimeInterval
+  private let totalCPUSampleProvider: (@Sendable () -> TotalCPUSample)?
+  private let resetTotalCPUSampler: (@Sendable (CPUIntervalContinuity?) -> Void)?
   private let eventHandler: EventHandler
   private let pressureMonitor: MemoryPressureMonitor
   private let sampleInterval: TimeInterval
@@ -41,10 +44,19 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
     database: MemoryWatcherDatabase,
     eventHandler: @escaping EventHandler = { _ in }
   ) {
+    let totalCPUSampler = SystemTotalCPUSampler()
     self.database = database
     sampleProvider = { try SystemMemorySampler().sampleOutcome() }
     timestampProvider = { Date() }
     uptimeProvider = { ProcessInfo.processInfo.systemUptime }
+    totalCPUSampleProvider = { totalCPUSampler.sample() }
+    resetTotalCPUSampler = { continuity in
+      if let continuity {
+        totalCPUSampler.reset(for: continuity)
+      } else {
+        totalCPUSampler.reset()
+      }
+    }
     self.eventHandler = eventHandler
     pressureMonitor = MemoryPressureMonitor()
     sampleInterval = MemoryWatcherFoundation.sampleInterval
@@ -59,6 +71,8 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
     uptimeProvider: @escaping @Sendable () -> TimeInterval,
     pressureMonitor: MemoryPressureMonitor = MemoryPressureMonitor(),
     sampleInterval: TimeInterval = MemoryWatcherFoundation.sampleInterval,
+    totalCPUSampleProvider: (@Sendable () -> TotalCPUSample)? = nil,
+    resetTotalCPUSampler: (@Sendable (CPUIntervalContinuity?) -> Void)? = nil,
     eventHandler: @escaping EventHandler = { _ in }
   ) {
     precondition(sampleInterval > 0)
@@ -66,6 +80,8 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
     self.sampleProvider = sampleProvider
     self.timestampProvider = timestampProvider
     self.uptimeProvider = uptimeProvider
+    self.totalCPUSampleProvider = totalCPUSampleProvider
+    self.resetTotalCPUSampler = resetTotalCPUSampler
     self.eventHandler = eventHandler
     self.pressureMonitor = pressureMonitor
     self.sampleInterval = sampleInterval
@@ -94,6 +110,10 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
           systemUptimeSeconds: launchAnchor.systemUptimeSeconds,
           kind: $0
         )
+      }
+      resetTotalCPUSampler?(nil)
+      if launchEvents.contains(where: { $0.kind == .rebootDetected }) {
+        resetTotalCPUSampler?(.reboot)
       }
       try database.insert(lifecycleEvents: launchEvents)
       for event in launchEvents {
@@ -126,6 +146,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       }
       cancelTimer()
       runState = .sleeping
+      resetTotalCPUSampler?(.sleep)
       lastSampleAnchor = nil
       let event = lifecycleEvent(kind: .sleep)
       do {
@@ -143,6 +164,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
         return
       }
       runState = .running
+      resetTotalCPUSampler?(.wake)
       lastSampleAnchor = nil
       lastHistoryMaintenanceUptime = nil
       let event = lifecycleEvent(kind: .wake)
@@ -171,6 +193,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
       }
       lastSampleAnchor = nil
       lastHistoryMaintenanceUptime = nil
+      resetTotalCPUSampler?(.clockChange)
     }
   }
 
@@ -224,8 +247,8 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
     guard runState == .running else {
       return
     }
+    var maintenanceAnchor: SystemTimelineAnchor?
     do {
-      let maintenanceAnchor: SystemTimelineAnchor
       switch try sampleProvider() {
       case .sample(let sample):
         let current = SystemTimelineAnchor(
@@ -245,6 +268,7 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
           )
           try database.insert(lifecycleEvents: [event])
           eventHandler(.lifecycle(event))
+          resetTotalCPUSampler?(.clockChange)
         }
         try database.insert(samples: [sample])
         self.lastSampleAnchor = current
@@ -258,9 +282,28 @@ public final class MemoryMonitoringEngine: @unchecked Sendable {
           systemUptimeSeconds: gap.systemUptimeSeconds
         )
       }
-      runHistoryMaintenanceIfDue(at: maintenanceAnchor)
     } catch {
       eventHandler(.failure(String(describing: error)))
+    }
+
+    if let totalCPUSampleProvider {
+      let cpuSample = totalCPUSampleProvider()
+      do {
+        try database.insert(totalCPUSamples: [cpuSample])
+        eventHandler(.totalCPU(cpuSample))
+        if maintenanceAnchor == nil {
+          maintenanceAnchor = SystemTimelineAnchor(
+            timestampUTC: cpuSample.intervalEndUTC,
+            systemUptimeSeconds: cpuSample.intervalEndUptimeSeconds
+          )
+        }
+      } catch {
+        eventHandler(.failure(String(describing: error)))
+      }
+    }
+
+    if let maintenanceAnchor {
+      runHistoryMaintenanceIfDue(at: maintenanceAnchor)
     }
   }
 
