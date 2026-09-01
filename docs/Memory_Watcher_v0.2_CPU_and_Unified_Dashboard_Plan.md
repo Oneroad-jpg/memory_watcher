@@ -61,6 +61,8 @@
 
 入力、実装手順、成果物、判定方法は
 [工程16A 詳細工程表・完了条件](Phase_16A_Unified_Dashboard_Detailed_Plan.md)にまとめる。
+T21で現在値更新と履歴Chartsの描画分離が必要になった場合の修復順序は、
+[工程16A-R 履歴Charts描画分離・CPU HOLD修復工程表](Phase_16A_Render_Isolation_Repair_Plan.md)を使う。
 以下は1工程内の作業単位であり、別々の工程完了やマージにはしない。
 全作業は未着手、試験は未実施である。
 
