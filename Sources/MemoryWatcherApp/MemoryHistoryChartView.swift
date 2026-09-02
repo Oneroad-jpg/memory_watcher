@@ -4,44 +4,10 @@ import SwiftUI
 
 struct MemoryHistoryChartView: View {
   @ObservedObject var viewModel: HistoryViewModel
-  @State private var selectedDate: Date?
-
-  private let gigabyte = 1_000_000_000.0
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      HStack {
-        Picker(
-          "表示期間",
-          selection: Binding(
-            get: { viewModel.historyPeriod },
-            set: { viewModel.selectHistoryPeriod($0) }
-          )
-        ) {
-          ForEach(MemoryHistoryPeriod.allCases) { period in
-            Text(period.displayName).tag(period)
-          }
-        }
-        .pickerStyle(.segmented)
-        .frame(maxWidth: 360)
-        .accessibilityIdentifier("memory-history-period-picker")
-
-        Spacer()
-
-        if let duration = viewModel.historyLoadDurationSeconds {
-          Text("読込 \(duration.formatted(.number.precision(.fractionLength(3))))秒")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-
-        Button {
-          viewModel.reloadHistory()
-        } label: {
-          Label("更新", systemImage: "arrow.clockwise")
-        }
-        .buttonStyle(.borderless)
-        .accessibilityIdentifier("memory-history-refresh")
-      }
+      historyControls
 
       if let snapshot = viewModel.historySnapshot,
         snapshot.period == viewModel.historyPeriod
@@ -52,7 +18,7 @@ struct MemoryHistoryChartView: View {
         {
           emptyHistoryView
         } else {
-          charts(snapshot: snapshot)
+          unifiedHistory(snapshot)
         }
       } else if viewModel.historyIsLoading {
         ProgressView("履歴を読み込んでいます")
@@ -66,43 +32,132 @@ struct MemoryHistoryChartView: View {
           .font(.caption)
           .foregroundStyle(.red)
           .lineLimit(2)
+          .accessibilityIdentifier("dashboard-history-error")
       }
     }
     .padding(16)
     .background(
       RoundedRectangle(cornerRadius: 14)
-        .fill(Color(nsColor: .controlBackgroundColor))
+        .fill(Color(nsColor: .windowBackgroundColor))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 14)
         .stroke(Color.secondary.opacity(0.18))
     )
-    .accessibilityIdentifier("memory-history-chart")
+    .accessibilityIdentifier("unified-dashboard-history")
+  }
+
+  private var historyControls: some View {
+    HStack {
+      Picker(
+        "表示期間",
+        selection: Binding(
+          get: { viewModel.historyPeriod },
+          set: { viewModel.selectHistoryPeriod($0) }
+        )
+      ) {
+        ForEach(MemoryHistoryPeriod.allCases) { period in
+          Text(period.displayName).tag(period)
+        }
+      }
+      .pickerStyle(.segmented)
+      .frame(maxWidth: 360)
+      .accessibilityIdentifier("memory-history-period-picker")
+
+      Spacer()
+
+      if let duration = viewModel.historyLoadDurationSeconds {
+        Text("読込 \(duration.formatted(.number.precision(.fractionLength(3))))秒")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
+      Button {
+        viewModel.reloadHistory()
+      } label: {
+        Label("更新", systemImage: "arrow.clockwise")
+      }
+      .buttonStyle(.borderless)
+      .keyboardShortcut("r", modifiers: .command)
+      .accessibilityIdentifier("memory-history-refresh")
+    }
   }
 
   @ViewBuilder
-  private func charts(snapshot: MemoryHistorySnapshot) -> some View {
-    let points = displayPoints(snapshot.points, limit: 600)
-    let selectedPoint =
-      selectedDate.flatMap {
-        viewModel.nearestHistoryPoint(to: $0)
-      }
-      ?? snapshot.points.last
-    let physicalMaximum = max(
-      0.1,
-      (points.map(\.physicalMemoryBytes).max() ?? gigabyte) / gigabyte
-    )
-    let swapMaximum = max(
-      0.1,
-      (points.map(\.swapUsedBytes).max() ?? 0) / gigabyte * 1.1
+  private func unifiedHistory(_ snapshot: MemoryHistorySnapshot) -> some View {
+    let selection = Binding<Date?>(
+      get: { viewModel.selectedUTC },
+      set: { viewModel.selectTimestamp($0) }
     )
 
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 14) {
-        legendItem("その他使用量（推定）", color: .blue)
+    VStack(alignment: .leading, spacing: 12) {
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .top, spacing: 12) {
+          LogicalCPUHistoryPanel(
+            snapshot: snapshot,
+            selectedUTC: selection
+          )
+          .frame(minWidth: 280, idealWidth: 320, maxWidth: 350)
+
+          VStack(spacing: 12) {
+            MemoryHistoryPanel(snapshot: snapshot, selectedUTC: selection)
+            TotalCPUHistoryPanel(snapshot: snapshot, selectedUTC: selection)
+          }
+          .frame(minWidth: 540)
+        }
+
+        VStack(spacing: 12) {
+          MemoryHistoryPanel(snapshot: snapshot, selectedUTC: selection)
+          TotalCPUHistoryPanel(snapshot: snapshot, selectedUTC: selection)
+          LogicalCPUHistoryPanel(snapshot: snapshot, selectedUTC: selection)
+        }
+      }
+
+      DashboardSelectionDetailView(selection: viewModel.selectedDetails)
+    }
+    .overlay(alignment: .topTrailing) {
+      if viewModel.historyIsLoading {
+        ProgressView()
+          .controlSize(.small)
+          .padding(6)
+          .background(.regularMaterial, in: Circle())
+      }
+    }
+  }
+
+  private var emptyHistoryView: some View {
+    VStack(spacing: 8) {
+      Image(systemName: "chart.xyaxis.line")
+        .font(.system(size: 34))
+        .foregroundStyle(.secondary)
+      Text("この期間の測定値はまだありません")
+        .font(.headline)
+      Text("Memory Watcherの起動中に履歴が蓄積されます")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, minHeight: 300)
+  }
+}
+
+private struct MemoryHistoryPanel: View {
+  let snapshot: MemoryHistorySnapshot
+  @Binding var selectedUTC: Date?
+
+  private let gigabyte = 1_000_000_000.0
+
+  var body: some View {
+    let points = displayPoints
+    let rows = compositionRows(from: points)
+    let physicalMaximum = physicalMaximum(from: points)
+    let swapMaximum = swapMaximum(from: points)
+    VStack(alignment: .leading, spacing: 9) {
+      HStack(spacing: 12) {
+        Text("メモリ")
+          .font(.headline)
+        legendItem("その他（推定）", color: .blue)
         legendItem("有線", color: .orange)
         legendItem("圧縮", color: .purple)
-        legendItem("物理メモリ", color: .secondary, line: true)
         Spacer()
         Text("空白 = 未測定 / sleep")
           .font(.caption)
@@ -110,7 +165,7 @@ struct MemoryHistoryChartView: View {
       }
 
       Chart {
-        ForEach(compositionRows(points)) { row in
+        ForEach(rows) { row in
           AreaMark(
             x: .value("時刻", row.timestampUTC),
             yStart: .value("開始 GB", row.lowerBytes / gigabyte),
@@ -141,18 +196,9 @@ struct MemoryHistoryChartView: View {
           .foregroundStyle(Color.gray.opacity(0.12))
         }
 
-        if let selectedPoint {
-          RuleMark(x: .value("選択時刻", selectedPoint.timestampUTC))
-            .foregroundStyle(Color.primary.opacity(0.55))
-          PointMark(
-            x: .value("選択時刻", selectedPoint.timestampUTC),
-            y: .value(
-              "選択使用量 GB",
-              selectedPoint.estimatedMemoryUsedBytes / gigabyte
-            )
-          )
-          .foregroundStyle(Color.primary)
-          .symbolSize(35)
+        if let selectedUTC {
+          RuleMark(x: .value("選択UTC", selectedUTC))
+            .foregroundStyle(Color.primary.opacity(0.5))
         }
       }
       .chartXScale(domain: snapshot.startUTC...snapshot.endUTC)
@@ -160,8 +206,8 @@ struct MemoryHistoryChartView: View {
       .chartXAxis { historyXAxis(period: snapshot.period) }
       .chartYAxisLabel("GB", position: .top)
       .chartLegend(.hidden)
-      .chartXSelection(value: $selectedDate)
-      .frame(height: 280)
+      .chartXSelection(value: $selectedUTC)
+      .frame(height: 235)
       .accessibilityLabel("メモリ使用量の構成グラフ")
 
       Text("スワップ")
@@ -176,14 +222,11 @@ struct MemoryHistoryChartView: View {
             series: .value("区間", "swap-\(point.continuitySegment)")
           )
           .foregroundStyle(Color.indigo)
-          .lineStyle(StrokeStyle(lineWidth: 1.5))
+          .lineStyle(StrokeStyle(lineWidth: 1.4))
         }
-        if let selectedPoint {
-          PointMark(
-            x: .value("選択時刻", selectedPoint.timestampUTC),
-            y: .value("選択スワップ GB", selectedPoint.swapUsedBytes / gigabyte)
-          )
-          .foregroundStyle(Color.indigo)
+        if let selectedUTC {
+          RuleMark(x: .value("選択UTC", selectedUTC))
+            .foregroundStyle(Color.primary.opacity(0.35))
         }
       }
       .chartXScale(domain: snapshot.startUTC...snapshot.endUTC)
@@ -191,10 +234,11 @@ struct MemoryHistoryChartView: View {
       .chartXAxis(.hidden)
       .chartYAxisLabel("GB", position: .top)
       .chartLegend(.hidden)
-      .frame(height: 105)
+      .chartXSelection(value: $selectedUTC)
+      .frame(height: 82)
       .accessibilityLabel("スワップ使用量グラフ")
 
-      HStack(spacing: 12) {
+      HStack(spacing: 10) {
         Text("メモリプレッシャー")
           .font(.caption.weight(.semibold))
         pressureLegend("UNKNOWN", color: .gray)
@@ -217,153 +261,30 @@ struct MemoryHistoryChartView: View {
       .chartXAxis(.hidden)
       .chartYAxis(.hidden)
       .chartLegend(.hidden)
-      .frame(height: 26)
+      .frame(height: 24)
       .accessibilityLabel("メモリプレッシャー履歴")
-
-      if let selectedPoint {
-        selectedPointDetails(selectedPoint)
-      }
-
-      CPUHistoryChartSection(
-        viewModel: viewModel,
-        snapshot: snapshot,
-        selectedDate: $selectedDate
-      )
     }
-    .overlay(alignment: .topTrailing) {
-      if viewModel.historyIsLoading {
-        ProgressView()
-          .controlSize(.small)
-          .padding(6)
-          .background(.regularMaterial, in: Circle())
-      }
-    }
-    .onChange(of: snapshot.period) {
-      selectedDate = nil
-    }
+    .padding(12)
+    .background(
+      RoundedRectangle(cornerRadius: 12)
+        .fill(Color(nsColor: .controlBackgroundColor))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12)
+        .stroke(Color.secondary.opacity(0.16))
+    )
   }
 
-  private var emptyHistoryView: some View {
-    VStack(spacing: 8) {
-      Image(systemName: "chart.xyaxis.line")
-        .font(.system(size: 34))
-        .foregroundStyle(.secondary)
-      Text("この期間の測定値はまだありません")
-        .font(.headline)
-      Text("Memory Watcherの起動中に履歴が蓄積されます")
-        .font(.caption)
-        .foregroundStyle(.secondary)
-    }
-    .frame(maxWidth: .infinity, minHeight: 300)
-  }
-
-  private func selectedPointDetails(_ point: MemoryHistoryPoint) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack {
-        Text(
-          point.timestampUTC.formatted(
-            .dateTime.year().month().day().hour().minute().second()
-          )
-        )
-        .font(.subheadline.weight(.semibold))
-        Spacer()
-        Text("実測 \(point.sampleCount)件")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-      HStack(spacing: 18) {
-        metric("使用量（推定）", bytes: point.estimatedMemoryUsedBytes)
-        metric("その他使用量", bytes: point.estimatedOtherUsedBytes)
-        metric("有線", bytes: point.wiredBytes)
-        metric("圧縮", bytes: point.compressedBytes)
-        metric("キャッシュ（推定）", bytes: point.estimatedCachedFilesBytes)
-        metric("スワップ", bytes: point.swapUsedBytes)
-      }
-    }
-    .padding(10)
-    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
-    .accessibilityIdentifier("memory-history-selected-point")
-  }
-
-  private func metric(_ label: String, bytes: Double) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(label)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-      Text("\((bytes / gigabyte).formatted(.number.precision(.fractionLength(2)))) GB")
-        .font(.caption.monospacedDigit())
-    }
-  }
-
-  private func legendItem(
-    _ label: String,
-    color: Color,
-    line: Bool = false
-  ) -> some View {
-    HStack(spacing: 5) {
-      if line {
-        Rectangle()
-          .fill(color)
-          .frame(width: 16, height: 2)
-      } else {
-        RoundedRectangle(cornerRadius: 2)
-          .fill(color.opacity(0.72))
-          .frame(width: 10, height: 10)
-      }
-      Text(label).font(.caption)
-    }
-  }
-
-  private func pressureLegend(_ label: String, color: Color) -> some View {
-    HStack(spacing: 4) {
-      Circle().fill(color).frame(width: 7, height: 7)
-      Text(label).font(.caption2)
-    }
-  }
-
-  @AxisContentBuilder
-  private func historyXAxis(period: MemoryHistoryPeriod) -> some AxisContent {
-    AxisMarks(values: .automatic(desiredCount: 6)) { value in
-      AxisGridLine()
-      AxisTick()
-      AxisValueLabel {
-        if let date = value.as(Date.self) {
-          Text(axisLabel(date, period: period))
-        }
-      }
-    }
-  }
-
-  private func axisLabel(_ date: Date, period: MemoryHistoryPeriod) -> String {
-    switch period {
-    case .twelveHours, .twentyFourHours:
-      return date.formatted(.dateTime.hour().minute())
-    case .threeDays:
-      return date.formatted(.dateTime.month().day())
-    }
-  }
-
-  private func displayPoints(
-    _ points: [MemoryHistoryPoint],
-    limit: Int
-  ) -> [MemoryHistoryPoint] {
-    guard points.count > limit, limit > 2 else {
-      return points
-    }
-    let step = Double(points.count - 1) / Double(limit - 1)
-    var indexes = Set((0..<limit).map { Int((Double($0) * step).rounded()) })
-    indexes.insert(0)
-    indexes.insert(points.count - 1)
-    for index in 1..<points.count
-    where points[index].continuitySegment != points[index - 1].continuitySegment {
-      indexes.insert(index - 1)
-      indexes.insert(index)
-    }
-    return indexes.sorted().map { points[$0] }
+  private var displayPoints: [MemoryHistoryPoint] {
+    let indices = DashboardDownsamplingPolicy.retainedIndices(
+      segmentIdentifiers: snapshot.points.map { "\($0.continuitySegment)" },
+      limit: DashboardChartPointBudget.primarySeriesLimit
+    )
+    return indices.map { snapshot.points[$0] }
   }
 
   private func compositionRows(
-    _ points: [MemoryHistoryPoint]
+    from points: [MemoryHistoryPoint]
   ) -> [CompositionRow] {
     points.flatMap { point in
       let otherTop = point.estimatedOtherUsedBytes
@@ -391,27 +312,70 @@ struct MemoryHistoryChartView: View {
     }
   }
 
+  private func physicalMaximum(from points: [MemoryHistoryPoint]) -> Double {
+    max(
+      0.1,
+      (points.map(\.physicalMemoryBytes).max() ?? gigabyte) / gigabyte
+    )
+  }
+
+  private func swapMaximum(from points: [MemoryHistoryPoint]) -> Double {
+    max(
+      0.1,
+      (points.map(\.swapUsedBytes).max() ?? 0) / gigabyte * 1.1
+    )
+  }
+
+  private func legendItem(_ label: String, color: Color) -> some View {
+    HStack(spacing: 4) {
+      RoundedRectangle(cornerRadius: 2)
+        .fill(color.opacity(0.72))
+        .frame(width: 9, height: 9)
+      Text(label).font(.caption2)
+    }
+  }
+
+  private func pressureLegend(_ label: String, color: Color) -> some View {
+    HStack(spacing: 3) {
+      Circle().fill(color).frame(width: 7, height: 7)
+      Text(label).font(.caption2)
+    }
+  }
+
   private func compositionColor(_ component: MemoryComponent) -> Color {
     switch component {
-    case .other:
-      return .blue
-    case .wired:
-      return .orange
-    case .compressed:
-      return .purple
+    case .other: return .blue
+    case .wired: return .orange
+    case .compressed: return .purple
     }
   }
 
   private func pressureColor(_ level: MemoryPressureLevel) -> Color {
     switch level {
-    case .unknown:
-      return .gray
-    case .normal:
-      return .green
-    case .warning:
-      return .yellow
-    case .critical:
-      return .red
+    case .unknown: return .gray
+    case .normal: return .green
+    case .warning: return .yellow
+    case .critical: return .red
+    }
+  }
+
+  @AxisContentBuilder
+  private func historyXAxis(
+    period: MemoryHistoryPeriod
+  ) -> some AxisContent {
+    AxisMarks(values: .automatic(desiredCount: 5)) { value in
+      AxisGridLine()
+      AxisTick()
+      AxisValueLabel {
+        if let date = value.as(Date.self) {
+          switch period {
+          case .twelveHours, .twentyFourHours:
+            Text(date.formatted(.dateTime.hour().minute()))
+          case .threeDays:
+            Text(date.formatted(.dateTime.month().day()))
+          }
+        }
+      }
     }
   }
 }
@@ -429,10 +393,11 @@ private struct CompositionRow: Identifiable {
   let upperBytes: Double
 
   var id: String {
-    "\(point.timestampUTC.timeIntervalSince1970)-\(component.rawValue)-\(point.continuitySegment)"
+    "\(point.timestampUTC.timeIntervalSince1970)-\(point.continuitySegment)-\(component.rawValue)"
   }
 
   var timestampUTC: Date { point.timestampUTC }
+
   var seriesKey: String {
     "\(component.rawValue)-\(point.continuitySegment)"
   }

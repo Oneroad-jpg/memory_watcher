@@ -2,52 +2,26 @@ import Charts
 import MemoryWatcherCore
 import SwiftUI
 
-struct CPUHistoryChartSection: View {
-  @ObservedObject var viewModel: HistoryViewModel
+struct TotalCPUHistoryPanel: View {
   let snapshot: MemoryHistorySnapshot
-  @Binding var selectedDate: Date?
+  @Binding var selectedUTC: Date?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Divider().padding(.vertical, 4)
-
+    VStack(alignment: .leading, spacing: 7) {
       HStack {
-        Text("CPU履歴")
+        Text("Mac全体CPU")
           .font(.headline)
         Text("使用率 = user + system + nice")
           .font(.caption)
           .foregroundStyle(.secondary)
         Spacer()
-        Text("空白 = UNKNOWN / sleep / 再起動 / 取得不能")
-          .font(.caption)
+        Text("0〜100%")
+          .font(.caption.monospacedDigit())
           .foregroundStyle(.secondary)
       }
-
-      if snapshot.cpuHistory.totalPoints.isEmpty
-        && snapshot.cpuHistory.logicalPoints.isEmpty
-      {
-        Text("この期間のCPU実測値はまだありません")
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity, minHeight: 120)
-          .accessibilityIdentifier("cpu-history-empty")
-      } else {
-        totalCPUChart
-        logicalCPUChart
-        selectedCPUDetails
-      }
-    }
-    .accessibilityIdentifier("cpu-history-section")
-  }
-
-  private var totalCPUChart: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text("Mac全体CPU")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.secondary)
 
       Chart {
-        ForEach(displayTotalPoints, id: \.pointID) { point in
+        ForEach(displayPoints, id: \.pointID) { point in
           LineMark(
             x: .value("時刻", point.timestampUTC),
             y: .value("CPU使用率", point.utilizationPercent),
@@ -67,193 +41,46 @@ struct CPUHistoryChartSection: View {
           .foregroundStyle(Color.gray.opacity(0.12))
         }
 
-        if let point = selectedTotalPoint {
-          RuleMark(x: .value("選択時刻", point.timestampUTC))
-            .foregroundStyle(Color.primary.opacity(0.5))
-          PointMark(
-            x: .value("選択時刻", point.timestampUTC),
-            y: .value("選択CPU使用率", point.utilizationPercent)
-          )
-          .foregroundStyle(Color.cyan)
-          .symbolSize(34)
-        }
-      }
-      .chartXScale(domain: snapshot.startUTC...snapshot.endUTC)
-      .chartYScale(domain: 0...100)
-      .chartXAxis { cpuXAxis }
-      .chartYAxisLabel("%", position: .top)
-      .chartLegend(.hidden)
-      .chartXSelection(value: $selectedDate)
-      .frame(height: 170)
-      .accessibilityLabel("Mac全体CPU使用率の履歴")
-    }
-  }
-
-  private var logicalCPUChart: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Text("論理CPU別")
-          .font(.caption.weight(.semibold))
-        Text("CPU番号はOSの0始まりindexを画面上で1始まり表示")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      }
-
-      Chart {
-        ForEach(displayLogicalPoints, id: \.pointID) { point in
-          LineMark(
-            x: .value("時刻", point.timestampUTC),
-            y: .value("CPU使用率", point.utilizationPercent),
-            series: .value("連続系列", point.seriesIdentifier)
-          )
-          .foregroundStyle(by: .value("論理CPU", point.displayName))
-          .lineStyle(StrokeStyle(lineWidth: 1.1))
-        }
-
-        if let selectedDate {
-          RuleMark(x: .value("選択時刻", selectedDate))
+        if let selectedUTC {
+          RuleMark(x: .value("選択UTC", selectedUTC))
             .foregroundStyle(Color.primary.opacity(0.45))
         }
       }
       .chartXScale(domain: snapshot.startUTC...snapshot.endUTC)
       .chartYScale(domain: 0...100)
-      .chartXAxis { cpuXAxis }
+      .chartXAxis { dashboardXAxis(period: snapshot.period) }
       .chartYAxisLabel("%", position: .top)
-      .chartLegend(position: .bottom, alignment: .leading, spacing: 6)
-      .chartXSelection(value: $selectedDate)
-      .frame(height: 230)
-      .accessibilityLabel("論理CPU別使用率の履歴")
-    }
-  }
+      .chartLegend(.hidden)
+      .chartXSelection(value: $selectedUTC)
+      .frame(height: 170)
+      .accessibilityLabel("Mac全体CPU使用率の履歴")
 
-  @ViewBuilder
-  private var selectedCPUDetails: some View {
-    if let point = selectedTotalPoint {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack {
-          Text(
-            point.timestampUTC.formatted(
-              .dateTime.year().month().day().hour().minute().second()
-            )
-          )
-          .font(.subheadline.weight(.semibold))
-          Spacer()
-          Text(
-            point.source == .raw
-              ? "実測 \(point.sampleCount)件"
-              : "1分集約 \(point.sampleCount)件"
-          )
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        }
-
-        HStack(spacing: 18) {
-          percentMetric("全体", value: point.utilizationPercent)
-          percentMetric("user", value: point.userPercent)
-          percentMetric("system", value: point.systemPercent)
-          percentMetric("nice", value: point.nicePercent)
-          percentMetric("idle", value: point.idlePercent)
-        }
-
-        let logicalPoints = selectedLogicalPoints
-        if !logicalPoints.isEmpty {
-          ScrollView(.horizontal) {
-            HStack(spacing: 14) {
-              ForEach(logicalPoints, id: \.pointID) { logical in
-                percentMetric(
-                  logical.displayName,
-                  value: logical.utilizationPercent
-                )
-              }
-            }
-          }
-          .scrollIndicators(.hidden)
-        }
-      }
-      .padding(10)
-      .background(
-        Color.primary.opacity(0.045),
-        in: RoundedRectangle(cornerRadius: 9)
-      )
-      .accessibilityIdentifier("cpu-history-selected-point")
-    }
-  }
-
-  private var selectedTotalPoint: TotalCPUHistoryPoint? {
-    let target = selectedDate ?? snapshot.cpuHistory.totalPoints.last?.timestampUTC
-    return target.flatMap { viewModel.nearestTotalCPUPoint(to: $0) }
-  }
-
-  private var selectedLogicalPoints: [LogicalCPUHistoryPoint] {
-    guard let target = selectedDate ?? selectedTotalPoint?.timestampUTC else {
-      return []
-    }
-    return viewModel.nearestLogicalCPUPoints(to: target)
-  }
-
-  private var displayTotalPoints: [TotalCPUHistoryPoint] {
-    downsample(
-      snapshot.cpuHistory.totalPoints,
-      limit: 600,
-      timestamp: \.timestampUTC,
-      segment: { "\($0.continuitySegment)" }
-    )
-  }
-
-  private var displayLogicalPoints: [LogicalCPUHistoryPoint] {
-    let groups = Dictionary(
-      grouping: snapshot.cpuHistory.logicalPoints,
-      by: \.seriesIdentifier
-    )
-    return groups.values.flatMap {
-      downsample(
-        $0,
-        limit: 180,
-        timestamp: \.timestampUTC,
-        segment: { $0.seriesIdentifier }
-      )
-    }.sorted { $0.timestampUTC < $1.timestampUTC }
-  }
-
-  private func downsample<Point>(
-    _ points: [Point],
-    limit: Int,
-    timestamp: KeyPath<Point, Date>,
-    segment: (Point) -> String
-  ) -> [Point] {
-    guard points.count > limit, limit > 2 else { return points }
-    let step = Double(points.count - 1) / Double(limit - 1)
-    var indexes = Set((0..<limit).map { Int((Double($0) * step).rounded()) })
-    indexes.insert(0)
-    indexes.insert(points.count - 1)
-    for index in 1..<points.count
-    where segment(points[index]) != segment(points[index - 1]) {
-      indexes.insert(index - 1)
-      indexes.insert(index)
-    }
-    return indexes.sorted().map { points[$0] }.sorted {
-      $0[keyPath: timestamp] < $1[keyPath: timestamp]
-    }
-  }
-
-  private func percentMetric(_ label: String, value: Double) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(label)
-        .font(.caption2)
+      Text("空白 = UNKNOWN / sleep / 再起動 / 取得不能")
+        .font(.caption)
         .foregroundStyle(.secondary)
-      Text("\(value.formatted(.number.precision(.fractionLength(1))))%")
-        .font(.caption.monospacedDigit())
     }
+    .dashboardPanel()
+  }
+
+  private var displayPoints: [TotalCPUHistoryPoint] {
+    let source = snapshot.cpuHistory.totalPoints
+    let indices = DashboardDownsamplingPolicy.retainedIndices(
+      segmentIdentifiers: source.map { "\($0.continuitySegment)" },
+      limit: DashboardChartPointBudget.primarySeriesLimit
+    )
+    return indices.map { source[$0] }
   }
 
   @AxisContentBuilder
-  private var cpuXAxis: some AxisContent {
-    AxisMarks(values: .automatic(desiredCount: 6)) { value in
+  private func dashboardXAxis(
+    period: MemoryHistoryPeriod
+  ) -> some AxisContent {
+    AxisMarks(values: .automatic(desiredCount: 5)) { value in
       AxisGridLine()
       AxisTick()
       AxisValueLabel {
         if let date = value.as(Date.self) {
-          switch snapshot.period {
+          switch period {
           case .twelveHours, .twentyFourHours:
             Text(date.formatted(.dateTime.hour().minute()))
           case .threeDays:
@@ -262,6 +89,240 @@ struct CPUHistoryChartSection: View {
         }
       }
     }
+  }
+}
+
+struct LogicalCPUHistoryPanel: View {
+  let snapshot: MemoryHistorySnapshot
+  @Binding var selectedUTC: Date?
+
+  var body: some View {
+    let chartSeries = series
+    VStack(alignment: .leading, spacing: 8) {
+      HStack {
+        Text("論理CPU別")
+          .font(.headline)
+        Spacer()
+        Text("OS indexを1始まり表示")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+
+      if chartSeries.isEmpty {
+        Text("この期間の論理CPU実測値はありません")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, minHeight: 100)
+      } else {
+        LazyVGrid(
+          columns: [GridItem(.adaptive(minimum: 210), spacing: 10)],
+          alignment: .leading,
+          spacing: 10
+        ) {
+          ForEach(chartSeries) { item in
+            logicalChart(item)
+          }
+        }
+      }
+
+      Text("各CPU 0〜100%・空白は未測定。物理コア種別は推測しません")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    .dashboardPanel()
+    .accessibilityIdentifier("logical-cpu-history-grid")
+  }
+
+  private func logicalChart(_ item: LogicalSeries) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text(item.displayName)
+        .font(.caption.weight(.semibold))
+      Chart {
+        ForEach(item.displayPoints, id: \.pointID) { point in
+          LineMark(
+            x: .value("時刻", point.timestampUTC),
+            y: .value("使用率", point.utilizationPercent),
+            series: .value("連続区間", point.seriesIdentifier)
+          )
+          .foregroundStyle(Color.green)
+          .lineStyle(StrokeStyle(lineWidth: 1.1))
+        }
+        if let selectedUTC {
+          RuleMark(x: .value("選択UTC", selectedUTC))
+            .foregroundStyle(Color.primary.opacity(0.35))
+        }
+      }
+      .chartXScale(domain: snapshot.startUTC...snapshot.endUTC)
+      .chartYScale(domain: 0...100)
+      .chartXAxis(.hidden)
+      .chartYAxis {
+        AxisMarks(values: [0.0, 50.0, 100.0]) {
+          AxisGridLine()
+          AxisValueLabel()
+        }
+      }
+      .chartLegend(.hidden)
+      .chartXSelection(value: $selectedUTC)
+      .frame(height: 78)
+      .accessibilityLabel("\(item.displayName)使用率の履歴")
+    }
+    .padding(7)
+    .background(
+      Color.primary.opacity(0.035),
+      in: RoundedRectangle(cornerRadius: 8)
+    )
+  }
+
+  private var series: [LogicalSeries] {
+    let groups = Dictionary(
+      grouping: snapshot.cpuHistory.logicalPoints,
+      by: \.cpuIndex
+    ).values
+    let displayLimit = DashboardChartPointBudget.logicalPerSeriesLimit(
+      seriesCount: groups.count
+    )
+    return groups.compactMap { points in
+      guard let first = points.first else { return nil }
+      return LogicalSeries(
+        id: "\(first.cpuIndex)",
+        displayName: first.displayName,
+        points: points.sorted { $0.timestampUTC < $1.timestampUTC },
+        displayLimit: displayLimit
+      )
+    }.sorted {
+      if $0.cpuIndex != $1.cpuIndex { return $0.cpuIndex < $1.cpuIndex }
+      return $0.id < $1.id
+    }
+  }
+}
+
+struct DashboardSelectionDetailView: View {
+  let selection: DashboardHistorySelection?
+  private let gigabyte = 1_000_000_000.0
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      if let selection {
+        HStack {
+          Text("選択UTC")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          Text(
+            selection.requestedUTC.formatted(
+              .dateTime.year().month().day().hour().minute().second()
+            )
+          )
+          .font(.subheadline.weight(.semibold))
+          Spacer()
+          Text("Pressure: \(selection.pressure?.rawValue ?? "未測定")")
+            .font(.caption)
+        }
+
+        LazyVGrid(
+          columns: [GridItem(.adaptive(minimum: 128), spacing: 12)],
+          alignment: .leading,
+          spacing: 8
+        ) {
+          if let memory = selection.memory {
+            metric(
+              "メモリ（推定）",
+              "\((memory.estimatedMemoryUsedBytes / gigabyte).formatted(.number.precision(.fractionLength(2)))) GB"
+            )
+            metric("メモリ区間", intervalText(memory))
+          } else {
+            metric("メモリ", "この時刻は未測定")
+          }
+
+          if let total = selection.totalCPU {
+            metric("CPU全体", percent(total.utilizationPercent))
+            metric("CPU区間", intervalText(total))
+            metric("user", percent(total.userPercent))
+            metric("system", percent(total.systemPercent))
+            metric("nice", percent(total.nicePercent))
+            metric("idle", percent(total.idlePercent))
+          } else {
+            metric("CPU全体", "この時刻は未測定")
+          }
+        }
+
+        if selection.logicalCPUs.isEmpty {
+          Text("論理CPU: この時刻は未測定")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+          LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 92), spacing: 10)],
+            alignment: .leading,
+            spacing: 6
+          ) {
+            ForEach(selection.logicalCPUs, id: \.selectionID) { cpu in
+              metric(cpu.displayName, percent(cpu.utilizationPercent))
+            }
+          }
+        }
+      } else {
+        Text("グラフ上の時刻を選択すると保存値と測定区間を確認できます")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .dashboardPanel()
+    .accessibilityIdentifier("dashboard-selection-details")
+  }
+
+  private func metric(_ label: String, _ value: String) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(label)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+      Text(value)
+        .font(.caption.monospacedDigit())
+    }
+  }
+
+  private func percent(_ value: Double) -> String {
+    "\(value.formatted(.number.precision(.fractionLength(1))))%"
+  }
+
+  private func intervalText(_ point: MemoryHistoryPoint) -> String {
+    point.source == .raw
+      ? point.timestampUTC.formatted(.dateTime.hour().minute().second())
+      : "\(point.intervalStartUTC.formatted(.dateTime.hour().minute()))–\(point.intervalEndUTC.formatted(.dateTime.hour().minute())) / \(point.sampleCount)件"
+  }
+
+  private func intervalText(_ point: TotalCPUHistoryPoint) -> String {
+    "\(point.intervalStartUTC.formatted(.dateTime.hour().minute().second()))–\(point.intervalEndUTC.formatted(.dateTime.hour().minute().second())) / \(point.sampleCount)件"
+  }
+}
+
+private struct LogicalSeries: Identifiable {
+  let id: String
+  let displayName: String
+  let points: [LogicalCPUHistoryPoint]
+  let displayLimit: Int
+
+  var cpuIndex: Int { points.first?.cpuIndex ?? -1 }
+
+  var displayPoints: [LogicalCPUHistoryPoint] {
+    let indices = DashboardDownsamplingPolicy.retainedIndices(
+      segmentIdentifiers: points.map(\.seriesIdentifier),
+      limit: displayLimit
+    )
+    return indices.map { points[$0] }
+  }
+}
+
+extension View {
+  fileprivate func dashboardPanel() -> some View {
+    padding(12)
+      .background(
+        RoundedRectangle(cornerRadius: 12)
+          .fill(Color(nsColor: .controlBackgroundColor))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12)
+          .stroke(Color.secondary.opacity(0.16))
+      )
   }
 }
 
@@ -274,5 +335,9 @@ extension TotalCPUHistoryPoint {
 extension LogicalCPUHistoryPoint {
   fileprivate var pointID: String {
     "\(topology.epochKey)-\(cpuIndex)-\(timestampUTC.timeIntervalSince1970)-\(continuitySegment)"
+  }
+
+  fileprivate var selectionID: String {
+    "\(topology.epochKey)-\(cpuIndex)"
   }
 }

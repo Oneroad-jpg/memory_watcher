@@ -97,13 +97,22 @@ public struct LogicalCPUHistoryPoint: Equatable, Sendable {
 public struct CPUHistorySnapshot: Equatable, Sendable {
   public let totalPoints: [TotalCPUHistoryPoint]
   public let logicalPoints: [LogicalCPUHistoryPoint]
+  public let totalDiscontinuityDates: [Date]
+  public let logicalGlobalDiscontinuityDates: [Date]
+  public let logicalSeriesDiscontinuityDates: [String: [Date]]
 
   public init(
     totalPoints: [TotalCPUHistoryPoint],
-    logicalPoints: [LogicalCPUHistoryPoint]
+    logicalPoints: [LogicalCPUHistoryPoint],
+    totalDiscontinuityDates: [Date] = [],
+    logicalGlobalDiscontinuityDates: [Date] = [],
+    logicalSeriesDiscontinuityDates: [String: [Date]] = [:]
   ) {
     self.totalPoints = totalPoints
     self.logicalPoints = logicalPoints
+    self.totalDiscontinuityDates = totalDiscontinuityDates
+    self.logicalGlobalDiscontinuityDates = logicalGlobalDiscontinuityDates
+    self.logicalSeriesDiscontinuityDates = logicalSeriesDiscontinuityDates
   }
 
   public static let empty = CPUHistorySnapshot(
@@ -194,7 +203,15 @@ struct CPUHistoryLoader: Sendable {
 
     return CPUHistorySnapshot(
       totalPoints: totalSegmented.map(Self.totalPoint(from:)),
-      logicalPoints: logicalSegmented.map(Self.logicalPoint(from:))
+      logicalPoints: logicalSegmented.map(Self.logicalPoint(from:)),
+      totalDiscontinuityDates: (lifecycleDiscontinuities + totalUnknownDates)
+        .sorted(),
+      logicalGlobalDiscontinuityDates: (lifecycleDiscontinuities + logicalGapDates).sorted(),
+      logicalSeriesDiscontinuityDates: Dictionary(
+        uniqueKeysWithValues: logicalUnknownDates.map { key, dates in
+          (key.publicIdentifier, dates.sorted())
+        }
+      )
     )
   }
 
@@ -437,6 +454,10 @@ struct CPUHistoryLoader: Sendable {
 private struct SeriesKey: Hashable, Comparable {
   let topologyEpoch: String?
   let cpuIndex: Int?
+
+  var publicIdentifier: String {
+    "\(topologyEpoch ?? "")-\(cpuIndex ?? -1)"
+  }
 
   static func < (lhs: SeriesKey, rhs: SeriesKey) -> Bool {
     let lhsEpoch = lhs.topologyEpoch ?? ""
