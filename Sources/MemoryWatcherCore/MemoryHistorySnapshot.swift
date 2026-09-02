@@ -47,6 +47,8 @@ public enum MemoryHistoryPointSource: String, Equatable, Sendable {
 
 public struct MemoryHistoryPoint: Equatable, Sendable {
   public let timestampUTC: Date
+  public let intervalStartUTC: Date
+  public let intervalEndUTC: Date
   public let source: MemoryHistoryPointSource
   public let sampleCount: Int
   public let continuitySegment: Int
@@ -60,6 +62,8 @@ public struct MemoryHistoryPoint: Equatable, Sendable {
 
   public init(
     timestampUTC: Date,
+    intervalStartUTC: Date,
+    intervalEndUTC: Date,
     source: MemoryHistoryPointSource,
     sampleCount: Int,
     continuitySegment: Int,
@@ -72,6 +76,8 @@ public struct MemoryHistoryPoint: Equatable, Sendable {
     swapUsedBytes: Double
   ) {
     self.timestampUTC = timestampUTC
+    self.intervalStartUTC = intervalStartUTC
+    self.intervalEndUTC = intervalEndUTC
     self.source = source
     self.sampleCount = sampleCount
     self.continuitySegment = continuitySegment
@@ -114,6 +120,7 @@ public struct MemoryHistorySnapshot: Equatable, Sendable {
   public let points: [MemoryHistoryPoint]
   public let pressureIntervals: [MemoryPressureInterval]
   public let sleepIntervals: [SystemSleepInterval]
+  public let memoryDiscontinuityDates: [Date]
   public let cpuHistory: CPUHistorySnapshot
 
   public init(
@@ -123,6 +130,7 @@ public struct MemoryHistorySnapshot: Equatable, Sendable {
     points: [MemoryHistoryPoint],
     pressureIntervals: [MemoryPressureInterval],
     sleepIntervals: [SystemSleepInterval],
+    memoryDiscontinuityDates: [Date],
     cpuHistory: CPUHistorySnapshot
   ) {
     self.period = period
@@ -131,6 +139,7 @@ public struct MemoryHistorySnapshot: Equatable, Sendable {
     self.points = points
     self.pressureIntervals = pressureIntervals
     self.sleepIntervals = sleepIntervals
+    self.memoryDiscontinuityDates = memoryDiscontinuityDates
     self.cpuHistory = cpuHistory
   }
 }
@@ -182,6 +191,7 @@ public struct MemoryHistoryLoader: Sendable {
       points: points,
       pressureIntervals: pressureIntervals,
       sleepIntervals: sleepIntervals,
+      memoryDiscontinuityDates: discontinuities.sorted(),
       cpuHistory: cpuHistory
     )
   }
@@ -194,6 +204,8 @@ public struct MemoryHistoryLoader: Sendable {
       return try database.fetchSamples().map { sample in
         UnsegmentedHistoryValue(
           timestampUTC: sample.timestampUTC,
+          intervalStartUTC: sample.timestampUTC,
+          intervalEndUTC: sample.timestampUTC,
           source: .raw,
           sampleCount: 1,
           physicalMemoryBytes: Double(sample.physicalMemoryBytes),
@@ -218,6 +230,10 @@ public struct MemoryHistoryLoader: Sendable {
     try database.fetchAggregates(resolution: resolution).map { aggregate in
       UnsegmentedHistoryValue(
         timestampUTC: aggregate.bucketStartUTC,
+        intervalStartUTC: aggregate.bucketStartUTC,
+        intervalEndUTC: aggregate.bucketStartUTC.addingTimeInterval(
+          aggregate.resolution.bucketDuration
+        ),
         source: source,
         sampleCount: aggregate.sampleCount,
         physicalMemoryBytes: aggregate.averagePhysicalMemoryBytes,
@@ -267,6 +283,8 @@ public struct MemoryHistoryLoader: Sendable {
       )
       return MemoryHistoryPoint(
         timestampUTC: value.timestampUTC,
+        intervalStartUTC: value.intervalStartUTC,
+        intervalEndUTC: value.intervalEndUTC,
         source: value.source,
         sampleCount: value.sampleCount,
         continuitySegment: segment,
@@ -374,7 +392,6 @@ public struct MemoryHistoryRefreshPolicy: Equatable, Sendable {
     now: Date
   ) -> Bool {
     guard
-      period == .twelveHours || period == .twentyFourHours,
       isWindowVisible,
       !isLoading
     else {
@@ -389,6 +406,8 @@ public struct MemoryHistoryRefreshPolicy: Equatable, Sendable {
 
 private struct UnsegmentedHistoryValue {
   let timestampUTC: Date
+  let intervalStartUTC: Date
+  let intervalEndUTC: Date
   let source: MemoryHistoryPointSource
   let sampleCount: Int
   let physicalMemoryBytes: Double

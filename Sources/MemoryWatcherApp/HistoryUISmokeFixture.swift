@@ -2,9 +2,17 @@ import Foundation
 import MemoryWatcherCore
 
 enum HistoryUISmokeFixture {
+  static func minuteAlignedReferenceDate(containing date: Date) -> Date {
+    let oneMinute: TimeInterval = 60
+    let minuteStart =
+      floor(date.timeIntervalSince1970 / oneMinute) * oneMinute
+    return Date(timeIntervalSince1970: minuteStart)
+  }
+
   static func populate(
     database: MemoryWatcherDatabase,
-    now: Date
+    now: Date,
+    logicalCPUCount: Int = 8
   ) throws {
     let oneMinute: TimeInterval = 60
     let start = now.addingTimeInterval(-3 * 24 * 60 * 60)
@@ -95,9 +103,9 @@ enum HistoryUISmokeFixture {
       }
     )
     let topology = LogicalCPUTopology(
-      epochKey: "history-smoke-logical-8",
+      epochKey: "history-smoke-logical-\(logicalCPUCount)",
       bootSessionStartUTC: start.addingTimeInterval(-1_000),
-      logicalCPUCount: 8
+      logicalCPUCount: logicalCPUCount
     )
     for index in cpuIndexes {
       try database.insert(

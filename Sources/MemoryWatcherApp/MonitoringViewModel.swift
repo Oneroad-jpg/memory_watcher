@@ -4,17 +4,22 @@ import MemoryWatcherCore
 @MainActor
 final class MonitoringViewModel: ObservableObject {
   @Published private(set) var runState: MemoryMonitoringRunState = .stopped
-  @Published private(set) var sampleCount = 0
-  @Published private(set) var gapCount = 0
-  @Published private(set) var lastMemoryUsedBytes: UInt64?
-  @Published private(set) var pressureLevel: MemoryPressureLevel = .unknown
-  @Published private(set) var lastLifecycleKind: SystemLifecycleEventKind?
+  private(set) var sampleCount = 0
+  private(set) var gapCount = 0
+  private(set) var lastMemoryUsedBytes: UInt64?
+  private(set) var pressureLevel: MemoryPressureLevel = .unknown
+  private(set) var lastLifecycleKind: SystemLifecycleEventKind?
   @Published private(set) var loginItemStatus: LoginItemRegistrationStatus
   @Published private(set) var errorMessage: String?
-
-  let history = HistoryViewModel()
+  @Published private(set) var currentValuesRevision: UInt64 = 0
+  private(set) var currentValuesPublicationCount: UInt64 = 0
 
   private let loginItemManager: LoginItemManager
+  private var memoryTracker = DashboardMemoryTracker()
+  private var totalCPUTracker = DashboardCPUTracker()
+  private var logicalCPUTrackers: [Int: DashboardCPUTracker] = [:]
+  private var logicalCPUTopology: LogicalCPUTopology?
+  private var currentValuesPublicationIsScheduled = false
 
   init(loginItemManager: LoginItemManager = LoginItemManager()) {
     self.loginItemManager = loginItemManager
@@ -34,51 +39,74 @@ final class MonitoringViewModel: ObservableObject {
     case .sample(let sample):
       sampleCount += 1
       lastMemoryUsedBytes = sample.estimatedMemoryUsedBytes
-      history.receiveSample(at: sample.timestampUTC)
+      memoryTracker.receive(sample)
+      scheduleCurrentValuesPublication()
     case .totalCPU(let sample):
-      history.receiveSample(at: sample.intervalEndUTC)
+      totalCPUTracker.receive(sample)
+      scheduleCurrentValuesPublication()
     case .logicalCPU(let outcome):
       switch outcome {
       case .samples(let samples):
-        if let timestamp = samples.first?.intervalEndUTC {
-          history.receiveSample(at: timestamp)
+        if let topology = samples.first?.topology,
+          topology != logicalCPUTopology
+        {
+          logicalCPUTrackers = [:]
+          logicalCPUTopology = topology
         }
+        for sample in samples {
+          var tracker =
+            logicalCPUTrackers[sample.cpuIndex]
+            ?? DashboardCPUTracker()
+          tracker.receive(sample)
+          logicalCPUTrackers[sample.cpuIndex] = tracker
+        }
+        scheduleCurrentValuesPublication()
       case .gap(let gap):
-        history.receiveSample(at: gap.timestampUTC)
+        for index in Array(logicalCPUTrackers.keys) {
+          guard var tracker = logicalCPUTrackers[index] else { continue }
+          tracker.receive(
+            percent: nil,
+            intervalStartUTC: nil,
+            intervalEndUTC: gap.timestampUTC,
+            quality: gap.quality
+          )
+          logicalCPUTrackers[index] = tracker
+        }
+        scheduleCurrentValuesPublication()
       }
     case .gap:
       gapCount += 1
     case .pressure(let observation):
       pressureLevel = observation.level
+      scheduleCurrentValuesPublication()
     case .lifecycle(let event):
       lastLifecycleKind = event.kind
+      scheduleCurrentValuesPublication()
     case .failure(let message):
       errorMessage = message
     }
   }
 
-  func configureHistory(
-    database: MemoryWatcherDatabase,
-    initialPeriod: MemoryHistoryPeriod = .twentyFourHours,
-    now: Date = Date()
-  ) {
-    history.configure(database: database, initialPeriod: initialPeriod, now: now)
+  func currentMemory(at now: Date) -> DashboardMemoryPresentation {
+    memoryTracker.presentation(at: now, runState: runState)
   }
 
-  var historyPeriod: MemoryHistoryPeriod {
-    history.historyPeriod
+  func currentTotalCPU(at now: Date) -> DashboardCPUPresentation {
+    totalCPUTracker.presentation(at: now, runState: runState)
   }
 
-  var historySnapshot: MemoryHistorySnapshot? {
-    history.historySnapshot
-  }
-
-  var historyIsLoading: Bool {
-    history.historyIsLoading
-  }
-
-  var historyLoadDurationSeconds: TimeInterval? {
-    history.historyLoadDurationSeconds
+  func currentLogicalCPUs(
+    at now: Date
+  ) -> [DashboardLogicalCPUPresentation] {
+    guard let logicalCPUTopology else { return [] }
+    return logicalCPUTrackers.keys.sorted().compactMap { index in
+      guard let tracker = logicalCPUTrackers[index] else { return nil }
+      return DashboardLogicalCPUPresentation(
+        topology: logicalCPUTopology,
+        cpuIndex: index,
+        value: tracker.presentation(at: now, runState: runState)
+      )
+    }
   }
 
   func setLoginItemEnabled(_ enabled: Bool) {
@@ -103,22 +131,53 @@ final class MonitoringViewModel: ObservableObject {
     errorMessage = String(describing: error)
     runState = .stopped
   }
+
+  private func scheduleCurrentValuesPublication() {
+    guard !currentValuesPublicationIsScheduled else { return }
+    currentValuesPublicationIsScheduled = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      guard let self else { return }
+      self.currentValuesRevision &+= 1
+      self.currentValuesPublicationCount &+= 1
+      self.currentValuesPublicationIsScheduled = false
+    }
+  }
+
+  #if DEBUG
+    func publishCurrentValuesForRenderIsolationTest() {
+      currentValuesRevision &+= 1
+      currentValuesPublicationCount &+= 1
+    }
+  #endif
 }
 
 @MainActor
 final class HistoryViewModel: ObservableObject {
+  enum ReloadReason: String, CaseIterable {
+    case automatic
+    case configure
+    case manual
+    case periodSelection
+    case windowVisible
+  }
+
   @Published private(set) var historyPeriod: MemoryHistoryPeriod =
     .twentyFourHours
   @Published private(set) var historySnapshot: MemoryHistorySnapshot?
   @Published private(set) var historyIsLoading = false
   @Published private(set) var historyLoadDurationSeconds: TimeInterval?
   @Published private(set) var historyErrorMessage: String?
+  @Published private(set) var selectedUTC: Date?
+  @Published private(set) var historyGeneration: UInt64 = 0
+  @Published private(set) var historyLoadRequestCount: UInt64 = 0
+  private(set) var historyReloadReasonCounts: [ReloadReason: UInt64] = [:]
 
   private let refreshPolicy = MemoryHistoryRefreshPolicy()
   private var historyLoader: MemoryHistoryLoader?
   private var historyLoadTask: Task<Void, Never>?
   private var lastReloadAt: Date?
   private var windowIsVisible = false
+  private var generationGate = DashboardHistoryGenerationGate()
 
   func configure(
     database: MemoryWatcherDatabase,
@@ -127,7 +186,7 @@ final class HistoryViewModel: ObservableObject {
   ) {
     historyLoader = MemoryHistoryLoader(database: database)
     historyPeriod = initialPeriod
-    reloadHistory(now: now)
+    reloadHistory(now: now, reason: .configure)
   }
 
   func setWindowVisible(_ visible: Bool, now: Date = Date()) {
@@ -140,7 +199,7 @@ final class HistoryViewModel: ObservableObject {
     {
       return
     }
-    reloadHistory(now: now)
+    reloadHistory(now: now, reason: .windowVisible)
   }
 
   func receiveSample(at now: Date) {
@@ -155,7 +214,7 @@ final class HistoryViewModel: ObservableObject {
     else {
       return
     }
-    reloadHistory(now: now)
+    reloadHistory(now: now, reason: .automatic)
   }
 
   func selectHistoryPeriod(
@@ -166,15 +225,23 @@ final class HistoryViewModel: ObservableObject {
       return
     }
     historyPeriod = period
-    reloadHistory(now: now)
+    selectedUTC = nil
+    reloadHistory(now: now, reason: .periodSelection)
   }
 
-  func reloadHistory(now: Date = Date()) {
+  func reloadHistory(
+    now: Date = Date(),
+    reason: ReloadReason = .manual
+  ) {
     guard let historyLoader else {
       return
     }
     historyLoadTask?.cancel()
     let period = historyPeriod
+    let generation = generationGate.issue()
+    historyGeneration = generation
+    historyLoadRequestCount &+= 1
+    historyReloadReasonCounts[reason, default: 0] &+= 1
     historyIsLoading = true
     historyErrorMessage = nil
     historyLoadTask = Task { [weak self] in
@@ -185,7 +252,11 @@ final class HistoryViewModel: ObservableObject {
           return (snapshot, Date().timeIntervalSince(startedAt))
         }.value
         try Task.checkCancellation()
-        guard let self, self.historyPeriod == period else {
+        guard
+          let self,
+          self.historyPeriod == period,
+          self.generationGate.accepts(generation)
+        else {
           return
         }
         self.historySnapshot = loaded.0
@@ -195,7 +266,7 @@ final class HistoryViewModel: ObservableObject {
       } catch is CancellationError {
         return
       } catch {
-        guard let self else {
+        guard let self, self.generationGate.accepts(generation) else {
           return
         }
         self.historyErrorMessage = String(describing: error)
@@ -204,64 +275,52 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
-  func nearestHistoryPoint(to date: Date) -> MemoryHistoryPoint? {
-    nearestPoint(in: historySnapshot?.points ?? [], to: date, at: \.timestampUTC)
-  }
-
-  func nearestTotalCPUPoint(to date: Date) -> TotalCPUHistoryPoint? {
-    nearestPoint(
-      in: historySnapshot?.cpuHistory.totalPoints ?? [],
-      to: date,
-      at: \.timestampUTC
+  var historyReloadReasonCountsForAudit: [String: UInt64] {
+    Dictionary(
+      uniqueKeysWithValues: ReloadReason.allCases.map { reason in
+        (reason.rawValue, historyReloadReasonCounts[reason, default: 0])
+      }
     )
   }
 
-  func nearestLogicalCPUPoints(to date: Date) -> [LogicalCPUHistoryPoint] {
-    guard
-      let snapshot = historySnapshot,
-      !snapshot.cpuHistory.logicalPoints.isEmpty
-    else {
-      return []
-    }
-    let nearest = snapshot.cpuHistory.logicalPoints.min {
-      abs($0.timestampUTC.timeIntervalSince(date))
-        < abs($1.timestampUTC.timeIntervalSince(date))
-    }
-    guard let nearest else { return [] }
-    let tolerance = max(0.001, snapshot.period.expectedPointInterval / 2)
-    return snapshot.cpuHistory.logicalPoints.filter {
-      abs($0.timestampUTC.timeIntervalSince(nearest.timestampUTC)) <= tolerance
-        && $0.topology == nearest.topology
-    }.sorted { $0.cpuIndex < $1.cpuIndex }
+  func selectTimestamp(_ date: Date?) {
+    selectedUTC = date
   }
 
-  private func nearestPoint<Point>(
-    in points: [Point],
-    to date: Date,
-    at timestamp: KeyPath<Point, Date>
-  ) -> Point? {
-    guard !points.isEmpty else { return nil }
-    var lower = 0
-    var upper = points.count
-    while lower < upper {
-      let middle = (lower + upper) / 2
-      if points[middle][keyPath: timestamp] < date {
-        lower = middle + 1
-      } else {
-        upper = middle
-      }
-    }
-    if lower == 0 {
-      return points[0]
-    }
-    if lower == points.count {
-      return points[points.count - 1]
-    }
-    let before = points[lower - 1]
-    let after = points[lower]
-    return date.timeIntervalSince(before[keyPath: timestamp])
-      <= after[keyPath: timestamp].timeIntervalSince(date)
-      ? before
-      : after
+  var selectedDetails: DashboardHistorySelection? {
+    guard let snapshot = historySnapshot else { return nil }
+    let target =
+      selectedUTC
+      ?? snapshot.cpuHistory.totalPoints.last?.timestampUTC
+      ?? snapshot.points.last?.timestampUTC
+    guard let target else { return nil }
+    return DashboardHistorySelectionResolver.resolve(
+      snapshot: snapshot,
+      at: target
+    )
+  }
+
+  func nearestHistoryPoint(to date: Date) -> MemoryHistoryPoint? {
+    guard let historySnapshot else { return nil }
+    return DashboardHistorySelectionResolver.resolve(
+      snapshot: historySnapshot,
+      at: date
+    ).memory
+  }
+
+  func nearestTotalCPUPoint(to date: Date) -> TotalCPUHistoryPoint? {
+    guard let historySnapshot else { return nil }
+    return DashboardHistorySelectionResolver.resolve(
+      snapshot: historySnapshot,
+      at: date
+    ).totalCPU
+  }
+
+  func nearestLogicalCPUPoints(to date: Date) -> [LogicalCPUHistoryPoint] {
+    guard let historySnapshot else { return [] }
+    return DashboardHistorySelectionResolver.resolve(
+      snapshot: historySnapshot,
+      at: date
+    ).logicalCPUs
   }
 }

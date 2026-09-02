@@ -35,7 +35,7 @@ final class MemoryHistoryLoaderTests: XCTestCase {
         now: now
       )
     )
-    XCTAssertFalse(
+    XCTAssertTrue(
       policy.shouldAutomaticallyReload(
         period: .threeDays,
         isWindowVisible: true,
