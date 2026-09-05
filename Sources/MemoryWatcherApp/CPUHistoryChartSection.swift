@@ -3,7 +3,7 @@ import MemoryWatcherCore
 import SwiftUI
 
 struct TotalCPUHistoryPanel: View {
-  let snapshot: MemoryHistorySnapshot
+  let snapshot: DashboardHistoryRenderSnapshot
   @Binding var selectedUTC: Date?
 
   var body: some View {
@@ -21,7 +21,7 @@ struct TotalCPUHistoryPanel: View {
       }
 
       Chart {
-        ForEach(displayPoints, id: \.pointID) { point in
+        ForEach(snapshot.totalCPUPoints, id: \.pointID) { point in
           LineMark(
             x: .value("時刻", point.timestampUTC),
             y: .value("CPU使用率", point.utilizationPercent),
@@ -62,15 +62,6 @@ struct TotalCPUHistoryPanel: View {
     .dashboardPanel()
   }
 
-  private var displayPoints: [TotalCPUHistoryPoint] {
-    let source = snapshot.cpuHistory.totalPoints
-    let indices = DashboardDownsamplingPolicy.retainedIndices(
-      segmentIdentifiers: source.map { "\($0.continuitySegment)" },
-      limit: DashboardChartPointBudget.primarySeriesLimit
-    )
-    return indices.map { source[$0] }
-  }
-
   @AxisContentBuilder
   private func dashboardXAxis(
     period: MemoryHistoryPeriod
@@ -93,7 +84,7 @@ struct TotalCPUHistoryPanel: View {
 }
 
 struct LogicalCPUHistoryPanel: View {
-  let snapshot: MemoryHistorySnapshot
+  let snapshot: DashboardHistoryRenderSnapshot
   @Binding var selectedUTC: Date?
 
   var body: some View {
@@ -119,7 +110,7 @@ struct LogicalCPUHistoryPanel: View {
           alignment: .leading,
           spacing: 10
         ) {
-          ForEach(chartSeries) { item in
+          ForEach(chartSeries, id: \.id) { item in
             logicalChart(item)
           }
         }
@@ -133,12 +124,14 @@ struct LogicalCPUHistoryPanel: View {
     .accessibilityIdentifier("logical-cpu-history-grid")
   }
 
-  private func logicalChart(_ item: LogicalSeries) -> some View {
+  private func logicalChart(
+    _ item: DashboardLogicalCPUHistorySeries
+  ) -> some View {
     VStack(alignment: .leading, spacing: 3) {
       Text(item.displayName)
         .font(.caption.weight(.semibold))
       Chart {
-        ForEach(item.displayPoints, id: \.pointID) { point in
+        ForEach(item.points, id: \.pointID) { point in
           LineMark(
             x: .value("時刻", point.timestampUTC),
             y: .value("使用率", point.utilizationPercent),
@@ -173,26 +166,8 @@ struct LogicalCPUHistoryPanel: View {
     )
   }
 
-  private var series: [LogicalSeries] {
-    let groups = Dictionary(
-      grouping: snapshot.cpuHistory.logicalPoints,
-      by: \.cpuIndex
-    ).values
-    let displayLimit = DashboardChartPointBudget.logicalPerSeriesLimit(
-      seriesCount: groups.count
-    )
-    return groups.compactMap { points in
-      guard let first = points.first else { return nil }
-      return LogicalSeries(
-        id: "\(first.cpuIndex)",
-        displayName: first.displayName,
-        points: points.sorted { $0.timestampUTC < $1.timestampUTC },
-        displayLimit: displayLimit
-      )
-    }.sorted {
-      if $0.cpuIndex != $1.cpuIndex { return $0.cpuIndex < $1.cpuIndex }
-      return $0.id < $1.id
-    }
+  private var series: [DashboardLogicalCPUHistorySeries] {
+    snapshot.logicalCPUSeries
   }
 }
 
@@ -292,23 +267,6 @@ struct DashboardSelectionDetailView: View {
 
   private func intervalText(_ point: TotalCPUHistoryPoint) -> String {
     "\(point.intervalStartUTC.formatted(.dateTime.hour().minute().second()))–\(point.intervalEndUTC.formatted(.dateTime.hour().minute().second())) / \(point.sampleCount)件"
-  }
-}
-
-private struct LogicalSeries: Identifiable {
-  let id: String
-  let displayName: String
-  let points: [LogicalCPUHistoryPoint]
-  let displayLimit: Int
-
-  var cpuIndex: Int { points.first?.cpuIndex ?? -1 }
-
-  var displayPoints: [LogicalCPUHistoryPoint] {
-    let indices = DashboardDownsamplingPolicy.retainedIndices(
-      segmentIdentifiers: points.map(\.seriesIdentifier),
-      limit: displayLimit
-    )
-    return indices.map { points[$0] }
   }
 }
 

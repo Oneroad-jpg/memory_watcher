@@ -92,13 +92,17 @@ enum MemoryWatcherAudit {
         MemoryRunAuditCheckpoint.self,
         from: Data(contentsOf: checkpointURL)
       )
+      let restoredCheckpoint = AuditCheckpointPrecision.restoringHistoryMarker(
+        in: checkpoint,
+        sampleTimestamps: try database.fetchSamples().map(\.timestampUTC)
+      )
       let comparisonURL = URL(fileURLWithPath: arguments[2]).standardizedFileURL
       let comparisons = try decoder.decode(
         [MemoryActivityMonitorComparison].self,
         from: Data(contentsOf: comparisonURL)
       )
       let report = try auditor.makeReport(
-        checkpoint: checkpoint,
+        checkpoint: restoredCheckpoint,
         activityMonitorComparisons: comparisons
       )
       writeData(try encoder.encode(report))

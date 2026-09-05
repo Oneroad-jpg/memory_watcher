@@ -271,6 +271,99 @@ public enum DashboardChartPointBudget {
   }
 }
 
+public struct DashboardLogicalCPUHistorySeries: Equatable, Sendable {
+  public let id: String
+  public let cpuIndex: Int
+  public let displayName: String
+  public let points: [LogicalCPUHistoryPoint]
+
+  public init(
+    id: String,
+    cpuIndex: Int,
+    displayName: String,
+    points: [LogicalCPUHistoryPoint]
+  ) {
+    self.id = id
+    self.cpuIndex = cpuIndex
+    self.displayName = displayName
+    self.points = points
+  }
+}
+
+public struct DashboardHistoryRenderSnapshot: Equatable, Sendable {
+  public let period: MemoryHistoryPeriod
+  public let startUTC: Date
+  public let endUTC: Date
+  public let memoryPoints: [MemoryHistoryPoint]
+  public let pressureIntervals: [MemoryPressureInterval]
+  public let sleepIntervals: [SystemSleepInterval]
+  public let totalCPUPoints: [TotalCPUHistoryPoint]
+  public let logicalCPUSeries: [DashboardLogicalCPUHistorySeries]
+
+  public init(snapshot: MemoryHistorySnapshot) {
+    period = snapshot.period
+    startUTC = snapshot.startUTC
+    endUTC = snapshot.endUTC
+    pressureIntervals = snapshot.pressureIntervals
+    sleepIntervals = snapshot.sleepIntervals
+    memoryPoints = Self.retained(
+      snapshot.points,
+      segmentIdentifiers: snapshot.points.map {
+        String($0.continuitySegment)
+      },
+      limit: DashboardChartPointBudget.primarySeriesLimit
+    )
+    totalCPUPoints = Self.retained(
+      snapshot.cpuHistory.totalPoints,
+      segmentIdentifiers: snapshot.cpuHistory.totalPoints.map {
+        String($0.continuitySegment)
+      },
+      limit: DashboardChartPointBudget.primarySeriesLimit
+    )
+
+    let groups = Dictionary(
+      grouping: snapshot.cpuHistory.logicalPoints,
+      by: \.cpuIndex
+    )
+    let perSeriesLimit = DashboardChartPointBudget.logicalPerSeriesLimit(
+      seriesCount: groups.count
+    )
+    logicalCPUSeries = groups.compactMap { cpuIndex, points in
+      let ordered = points.sorted { $0.timestampUTC < $1.timestampUTC }
+      guard let first = ordered.first else { return nil }
+      return DashboardLogicalCPUHistorySeries(
+        id: String(cpuIndex),
+        cpuIndex: cpuIndex,
+        displayName: first.displayName,
+        points: Self.retained(
+          ordered,
+          segmentIdentifiers: ordered.map(\.seriesIdentifier),
+          limit: perSeriesLimit
+        )
+      )
+    }.sorted { lhs, rhs in
+      lhs.cpuIndex < rhs.cpuIndex
+    }
+  }
+
+  public var isEmpty: Bool {
+    memoryPoints.isEmpty
+      && totalCPUPoints.isEmpty
+      && logicalCPUSeries.allSatisfy { $0.points.isEmpty }
+  }
+
+  private static func retained<Element>(
+    _ values: [Element],
+    segmentIdentifiers: [String],
+    limit: Int
+  ) -> [Element] {
+    DashboardDownsamplingPolicy.retainedIndices(
+      segmentIdentifiers: segmentIdentifiers,
+      limit: limit
+    ).map { values[$0] }
+  }
+}
+
 public struct DashboardMemoryGapAudit: Equatable, Sendable {
   public let explicitGapCount: Int
   public let reasonCounts: [String: Int]
@@ -291,6 +384,15 @@ public struct DashboardMemoryGapAudit: Equatable, Sendable {
 }
 
 public enum DashboardMemoryGapAuditEvaluator {
+  public static func observedSlotCount(
+    sampleDelta: Int,
+    explicitGapCount: Int
+  ) -> Int? {
+    guard sampleDelta >= 0, explicitGapCount >= 0 else { return nil }
+    let result = sampleDelta.addingReportingOverflow(explicitGapCount)
+    return result.overflow ? nil : result.partialValue
+  }
+
   public static func evaluate(
     allGaps: [MemorySamplingGap],
     initialGapCount: Int,

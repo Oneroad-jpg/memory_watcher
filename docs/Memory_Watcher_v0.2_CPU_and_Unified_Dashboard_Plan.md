@@ -2,7 +2,7 @@
 
 ## 文書状態と対象範囲
 
-- 状態: 工程14完了。工程15は実装・技術検証済みで、PR・merge・remote readback前。
+- 状態: 工程17の技術条件はPASS。単一commit、PR、merge、remote readback前。
 - 着手条件: v0.1の工程12と最終完成ゲートが完了していること。
 - 対象: Mac全体のCPU、論理CPU別のCPU、既存のメモリ履歴。
 - 表示期間: 12時間・24時間・3日。旧7日・30日表示は追加しない。
@@ -31,6 +31,8 @@
 
 工程13で固定する取得元、差分式、UNKNOWN、Activity Monitor照合、容量・性能条件は
 [CPU指標定義 v1](CPU_Metric_Definitions_v1.md)を正本とする。
+工程17の実運転、軽量性、機種差、最終候補の結果は
+[工程17 統合版最終監査 検証記録](Phase_17_Verification.md)にまとめる。
 
 ## 工程16Aの画面構成
 

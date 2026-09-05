@@ -14,6 +14,10 @@ final class MemoryWatcherMenuBarController: NSObject, NSMenuDelegate {
   private let historyWindowIsVisible: () -> Bool
   private let setLoginEnabled: (Bool) -> Void
   private let quitApplication: () -> Void
+  private var lastUsageValue: String?
+  private var lastPressureLevel: MemoryPressureLevel?
+  private var lastLoginStatus: LoginItemRegistrationStatus?
+  private(set) var renderedUpdateCount: UInt64 = 0
 
   init(
     toggleHistory: @escaping () -> Void,
@@ -53,6 +57,13 @@ final class MemoryWatcherMenuBarController: NSObject, NSMenuDelegate {
     loginStatus: LoginItemRegistrationStatus
   ) {
     let value = memoryUsedBytes.map(Self.formatGigabytes) ?? "— GB"
+    guard
+      value != lastUsageValue
+        || pressureLevel != lastPressureLevel
+        || loginStatus != lastLoginStatus
+    else {
+      return
+    }
     statusItem.button?.title = value
     currentUsageItem.title = "現在の使用量（推定）: \(value)"
     pressureItem.title = "Pressure: \(pressureLevel.rawValue)"
@@ -64,6 +75,10 @@ final class MemoryWatcherMenuBarController: NSObject, NSMenuDelegate {
       loginStatus == .requiresApproval
       ? "システム設定での許可が必要です"
       : nil
+    lastUsageValue = value
+    lastPressureLevel = pressureLevel
+    lastLoginStatus = loginStatus
+    renderedUpdateCount &+= 1
     updateHistoryCommandTitle()
   }
 
