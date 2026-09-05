@@ -96,6 +96,7 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 完了: 工程17「統合版の最終監査」
 - v0.2完成
 - 完了: 工程18「表示構成要件と設定契約」
+- 完了: 工程19「適応レイアウトとプリセット表示」
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
@@ -109,6 +110,7 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - v0.2計画: [CPU・統合画面工程表](docs/Memory_Watcher_v0.2_CPU_and_Unified_Dashboard_Plan.md)
 - v0.3計画: [ローカル表示構成工程表](docs/Memory_Watcher_v0.3_Layout_Configuration_Plan.md)
 - 表示設定契約: [Dashboard Layout Contract v1](docs/Dashboard_Layout_Contract_v1.md)
+- 工程19検証記録: [適応レイアウトとプリセット表示](docs/Phase_19_Verification.md)
 
 ## 開発
 

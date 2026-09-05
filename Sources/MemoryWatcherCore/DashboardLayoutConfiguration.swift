@@ -157,10 +157,37 @@ public struct DashboardLayoutConfiguration: Codable, Equatable, Sendable {
     !resolved().hiddenSections.contains(section)
   }
 
+  public var visibleSections: [DashboardLayoutSection] {
+    let resolved = resolved()
+    return resolved.sectionOrder.filter {
+      !resolved.hiddenSections.contains($0)
+    }
+  }
+
+  public var usesCanonicalSectionOrder: Bool {
+    resolved().sectionOrder == Self.canonicalSectionOrder
+  }
+
   private func unique(
     _ sections: [DashboardLayoutSection]
   ) -> [DashboardLayoutSection] {
     var seen = Set<DashboardLayoutSection>()
     return sections.filter { seen.insert($0).inserted }
+  }
+}
+
+extension DashboardLayoutPolicy {
+  public static func currentPaneHeight(
+    forAvailableHeight height: Double,
+    preset: DashboardLayoutPreset
+  ) -> Double {
+    let metrics = preset.metrics
+    return min(
+      metrics.currentPaneMaximumHeight,
+      max(
+        metrics.currentPaneMinimumHeight,
+        height * metrics.currentPaneHeightFraction
+      )
+    )
   }
 }
