@@ -12,6 +12,7 @@ final class MonitoringViewModel: ObservableObject {
   @Published private(set) var loginItemStatus: LoginItemRegistrationStatus
   @Published private(set) var errorMessage: String?
   @Published private(set) var currentValuesRevision: UInt64 = 0
+  @Published private(set) var currentValuesAreVisible = false
   private(set) var currentValuesPublicationCount: UInt64 = 0
 
   private let loginItemManager: LoginItemManager
@@ -32,6 +33,14 @@ final class MonitoringViewModel: ObservableObject {
 
   func updateRunState(_ state: MemoryMonitoringRunState) {
     runState = state
+  }
+
+  func setCurrentValuesVisible(_ visible: Bool) {
+    guard currentValuesAreVisible != visible else { return }
+    currentValuesAreVisible = visible
+    if visible {
+      scheduleCurrentValuesPublication()
+    }
   }
 
   func receive(_ event: MemoryMonitoringEvent) {
@@ -133,18 +142,22 @@ final class MonitoringViewModel: ObservableObject {
   }
 
   private func scheduleCurrentValuesPublication() {
-    guard !currentValuesPublicationIsScheduled else { return }
+    guard currentValuesAreVisible, !currentValuesPublicationIsScheduled else {
+      return
+    }
     currentValuesPublicationIsScheduled = true
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
       guard let self else { return }
+      self.currentValuesPublicationIsScheduled = false
+      guard self.currentValuesAreVisible else { return }
       self.currentValuesRevision &+= 1
       self.currentValuesPublicationCount &+= 1
-      self.currentValuesPublicationIsScheduled = false
     }
   }
 
   #if DEBUG
     func publishCurrentValuesForRenderIsolationTest() {
+      guard currentValuesAreVisible else { return }
       currentValuesRevision &+= 1
       currentValuesPublicationCount &+= 1
     }
@@ -164,6 +177,7 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var historyPeriod: MemoryHistoryPeriod =
     .twentyFourHours
   @Published private(set) var historySnapshot: MemoryHistorySnapshot?
+  @Published private(set) var historyRenderSnapshot: DashboardHistoryRenderSnapshot?
   @Published private(set) var historyIsLoading = false
   @Published private(set) var historyLoadDurationSeconds: TimeInterval?
   @Published private(set) var historyErrorMessage: String?
@@ -186,15 +200,29 @@ final class HistoryViewModel: ObservableObject {
   ) {
     historyLoader = MemoryHistoryLoader(database: database)
     historyPeriod = initialPeriod
-    reloadHistory(now: now, reason: .configure)
+    historySnapshot = nil
+    historyRenderSnapshot = nil
+    selectedUTC = nil
+    lastReloadAt = nil
+    if windowIsVisible {
+      reloadHistory(now: now, reason: .configure)
+    }
   }
 
   func setWindowVisible(_ visible: Bool, now: Date = Date()) {
     windowIsVisible = visible
     guard visible else {
+      historyLoadTask?.cancel()
+      historyLoadTask = nil
+      historySnapshot = nil
+      historyRenderSnapshot = nil
+      selectedUTC = nil
+      historyIsLoading = false
+      lastReloadAt = nil
       return
     }
-    if let lastReloadAt,
+    if historyRenderSnapshot != nil,
+      let lastReloadAt,
       now.timeIntervalSince(lastReloadAt) < 15
     {
       return
@@ -249,7 +277,14 @@ final class HistoryViewModel: ObservableObject {
         let loaded = try await Task.detached(priority: .userInitiated) {
           let startedAt = Date()
           let snapshot = try historyLoader.load(period: period, now: now)
-          return (snapshot, Date().timeIntervalSince(startedAt))
+          let renderSnapshot = DashboardHistoryRenderSnapshot(
+            snapshot: snapshot
+          )
+          return (
+            snapshot,
+            renderSnapshot,
+            Date().timeIntervalSince(startedAt)
+          )
         }.value
         try Task.checkCancellation()
         guard
@@ -260,10 +295,13 @@ final class HistoryViewModel: ObservableObject {
           return
         }
         self.historySnapshot = loaded.0
-        self.historyLoadDurationSeconds = loaded.1
+        self.historyRenderSnapshot = loaded.1
+        self.historyLoadDurationSeconds = loaded.2
         self.historyIsLoading = false
         self.lastReloadAt = now
+        self.historyLoadTask = nil
       } catch is CancellationError {
+        self?.historyLoadTask = nil
         return
       } catch {
         guard let self, self.generationGate.accepts(generation) else {
@@ -271,6 +309,7 @@ final class HistoryViewModel: ObservableObject {
         }
         self.historyErrorMessage = String(describing: error)
         self.historyIsLoading = false
+        self.historyLoadTask = nil
       }
     }
   }

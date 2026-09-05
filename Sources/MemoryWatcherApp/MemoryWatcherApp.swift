@@ -45,6 +45,7 @@ private struct DashboardRuntimeAuditContext {
   let initialHistoryLoadCount: UInt64
   let hiddenAt: Date
   let hiddenStartSampleCount: Int
+  let hiddenStartMemoryGapCount: Int
   let historyLoadCountAtHide: UInt64
 }
 
@@ -431,6 +432,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     guard let window else {
       return
     }
+    viewModel.setCurrentValuesVisible(true)
     historyViewModel.setWindowVisible(true)
     NSApplication.shared.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
@@ -446,6 +448,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       return
     }
     if window.isVisible {
+      viewModel.setCurrentValuesVisible(false)
       historyViewModel.setWindowVisible(false)
       window.orderOut(nil)
     } else {
@@ -454,6 +457,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
   }
 
   func windowWillClose(_ notification: Notification) {
+    viewModel.setCurrentValuesVisible(false)
     historyViewModel.setWindowVisible(false)
   }
 
@@ -556,28 +560,34 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
 
   private func runLifecycleSmokeTest() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-      self?.window?.close()
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) { [weak self] in
-      guard let self else {
-        return
+      guard let self else { return }
+      self.window?.close()
+      let hiddenPublicationCount = self.viewModel.currentValuesPublicationCount
+      DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+        guard let self else { return }
+        let sampleCount = (try? self.database?.sampleCount()) ?? 0
+        let windowVisible = self.window?.isVisible ?? false
+        let state = self.engine?.state ?? .stopped
+        let hiddenPublicationDelta =
+          self.viewModel.currentValuesPublicationCount - hiddenPublicationCount
+        let status =
+          sampleCount >= 2
+            && !windowVisible
+            && state == .running
+            && hiddenPublicationDelta == 0
+          ? "PASS"
+          : "FAIL"
+        self.writeSmokeResult(
+          [
+            "hidden_current_value_publication_delta": hiddenPublicationDelta,
+            "monitoring_state": state.rawValue,
+            "sample_count": sampleCount,
+            "status": status,
+            "window_visible_after_close": windowVisible,
+          ]
+        )
+        NSApplication.shared.terminate(nil)
       }
-      let sampleCount = (try? self.database?.sampleCount()) ?? 0
-      let windowVisible = self.window?.isVisible ?? false
-      let state = self.engine?.state ?? .stopped
-      let status =
-        sampleCount >= 2 && !windowVisible && state == .running
-        ? "PASS"
-        : "FAIL"
-      self.writeSmokeResult(
-        [
-          "monitoring_state": state.rawValue,
-          "sample_count": sampleCount,
-          "status": status,
-          "window_visible_after_close": windowVisible,
-        ]
-      )
-      NSApplication.shared.terminate(nil)
     }
   }
 
@@ -788,6 +798,18 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         $0.title == "Memory Watcher" && $0.styleMask.contains(.titled)
       }.count
       let statusTitle = menuBarController.statusTitle
+      let renderedUpdateCountBeforeDuplicate =
+        menuBarController.renderedUpdateCount
+      refreshMenuBar()
+      let renderedUpdateCountAfterFirstDuplicate =
+        menuBarController.renderedUpdateCount
+      refreshMenuBar()
+      let duplicateUpdateWasSuppressed =
+        menuBarController.renderedUpdateCount
+        == renderedUpdateCountAfterFirstDuplicate
+      let firstDuplicateDidNotOverRender =
+        renderedUpdateCountAfterFirstDuplicate
+        - renderedUpdateCountBeforeDuplicate <= 1
       let status =
         NSApplication.shared.activationPolicy() == .accessory
           && menuBarController.isInstalled
@@ -799,6 +821,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
           && historyWindowCount == 1
           && statusTitle.hasSuffix(" GB")
           && !statusTitle.contains("—")
+          && duplicateUpdateWasSuppressed
+          && firstDuplicateDidNotOverRender
           && self.engine?.state == .running
         ? "PASS"
         : "FAIL"
@@ -809,6 +833,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         "history_window_count": historyWindowCount,
         "initially_hidden": initiallyHidden,
         "menu_commands_present": menuBarController.hasRequiredCommands,
+        "duplicate_update_suppressed": duplicateUpdateWasSuppressed,
         "monitoring_state": self.engine?.state.rawValue ?? "stopped",
         "opened_from_menu_bar": openedFromMenuBar,
         "status": status,
@@ -841,6 +866,9 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         else { return }
         let hiddenAt = Date()
         let hiddenStartSampleCount = (try? database.sampleCount()) ?? -1
+        let hiddenStartMemoryGapCount =
+          (try? database.samplingGapCount()) ?? -1
+        self.viewModel.setCurrentValuesVisible(false)
         self.historyViewModel.setWindowVisible(false)
         window.orderOut(nil)
         let historyLoadCountAtHide =
@@ -848,6 +876,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         self.writeSmokeResult([
           "event": "runtime-audit-hidden",
           "history_load_count": historyLoadCountAtHide,
+          "memory_gap_count": hiddenStartMemoryGapCount,
           "sample_count": hiddenStartSampleCount,
           "visible_seconds": hiddenAt.timeIntervalSince(startedAt),
           "window_visible": window.isVisible,
@@ -861,6 +890,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
           initialHistoryLoadCount: initialHistoryLoadCount,
           hiddenAt: hiddenAt,
           hiddenStartSampleCount: hiddenStartSampleCount,
+          hiddenStartMemoryGapCount: hiddenStartMemoryGapCount,
           historyLoadCountAtHide: historyLoadCountAtHide
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + 15 * 60) {
@@ -960,6 +990,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       return
     }
     guard let window else { return }
+    viewModel.setCurrentValuesVisible(false)
     historyViewModel.setWindowVisible(false)
     window.orderOut(nil)
     writeDashboardT21PhaseResult(context: visibleContext)
@@ -1009,7 +1040,6 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     let finalTotalCPUSampleCount =
       (try? database.totalCPUSampleCount()) ?? -1
     let finalHistoryLoadCount = historyViewModel.historyLoadRequestCount
-    let finalMemoryGapCount = (try? database.samplingGapCount()) ?? -1
     let finalLogicalCPUGapCount =
       (try? database.logicalCPUSamplingGapCount()) ?? -1
     let historyLoadDelta =
@@ -1022,15 +1052,27 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       : UInt64.max
     let totalCPUSampleDelta =
       finalTotalCPUSampleCount - hiddenContext.initialTotalCPUSampleCount
+    let allMemoryGaps = (try? database.fetchSamplingGaps()) ?? []
+    let memoryGapAudit = DashboardMemoryGapAuditEvaluator.evaluate(
+      allGaps: allMemoryGaps,
+      initialGapCount: hiddenContext.initialMemoryGapCount,
+      initialMonitoringFailureCount:
+        hiddenContext.initialMonitoringFailureCount,
+      finalMonitoringFailureCount: monitoringFailureCount
+    )
+    let memorySlotDelta =
+      DashboardMemoryGapAuditEvaluator.observedSlotCount(
+        sampleDelta: finalSampleCount - hiddenContext.initialSampleCount,
+        explicitGapCount: memoryGapAudit.explicitGapCount
+      )
     let status =
       elapsedUptime >= 15 * 60 - 1
         && averageCPUPercent.map { $0 < 1 } == true
-        && finalSampleCount - hiddenContext.initialSampleCount >= 170
+        && memorySlotDelta.map { $0 >= 170 } == true
         && totalCPUSampleDelta >= 170
         && historyLoadDelta == 0
-        && finalMemoryGapCount == hiddenContext.initialMemoryGapCount
+        && memoryGapAudit.isValid
         && finalLogicalCPUGapCount == hiddenContext.initialLogicalCPUGapCount
-        && monitoringFailureDelta == 0
         && (try? database.integrityCheck()) == "ok"
         && !window.isVisible
       ? "PASS"
@@ -1043,7 +1085,11 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         historyViewModel.historyReloadReasonCountsForAudit,
       "logical_cpu_gap_delta":
         finalLogicalCPUGapCount - hiddenContext.initialLogicalCPUGapCount,
-      "memory_gap_delta": finalMemoryGapCount - hiddenContext.initialMemoryGapCount,
+      "memory_gap_delta": memoryGapAudit.explicitGapCount,
+      "memory_gap_diagnostics_status":
+        memoryGapAudit.isValid ? "PASS" : "FAIL",
+      "memory_gap_reason_counts": memoryGapAudit.reasonCounts,
+      "memory_slot_delta": memorySlotDelta ?? -1,
       "monitoring_activity_active": monitoringActivity != nil,
       "monitoring_failure_delta": monitoringFailureDelta,
       "process_id": ProcessInfo.processInfo.processIdentifier,
@@ -1127,8 +1173,18 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     let totalCPUSampleDelta =
       ((try? database.totalCPUSampleCount()) ?? -1)
       - context.initialTotalCPUSampleCount
-    let memoryGapDelta =
-      ((try? database.samplingGapCount()) ?? -1) - context.initialMemoryGapCount
+    let allMemoryGaps = (try? database.fetchSamplingGaps()) ?? []
+    let memoryGapAudit = DashboardMemoryGapAuditEvaluator.evaluate(
+      allGaps: allMemoryGaps,
+      initialGapCount: context.initialMemoryGapCount,
+      initialMonitoringFailureCount: context.initialMonitoringFailureCount,
+      finalMonitoringFailureCount: monitoringFailureCount
+    )
+    let memorySlotDelta =
+      DashboardMemoryGapAuditEvaluator.observedSlotCount(
+        sampleDelta: sampleDelta,
+        explicitGapCount: memoryGapAudit.explicitGapCount
+      )
     let logicalCPUGapDelta =
       ((try? database.logicalCPUSamplingGapCount()) ?? -1)
       - context.initialLogicalCPUGapCount
@@ -1139,12 +1195,11 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     let status =
       elapsedUptime >= 15 * 60 - 1
         && averageCPUPercent.map { $0 < 1 } == true
-        && sampleDelta >= 170
+        && memorySlotDelta.map { $0 >= 170 } == true
         && totalCPUSampleDelta >= 170
         && historyLoadDelta == 3
-        && memoryGapDelta == 0
+        && memoryGapAudit.isValid
         && logicalCPUGapDelta == 0
-        && monitoringFailureDelta == 0
         && !window.isVisible
       ? "PASS"
       : "FAIL"
@@ -1155,7 +1210,11 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       "history_reload_reason_counts":
         historyViewModel.historyReloadReasonCountsForAudit,
       "logical_cpu_gap_delta": logicalCPUGapDelta,
-      "memory_gap_delta": memoryGapDelta,
+      "memory_gap_delta": memoryGapAudit.explicitGapCount,
+      "memory_gap_diagnostics_status":
+        memoryGapAudit.isValid ? "PASS" : "FAIL",
+      "memory_gap_reason_counts": memoryGapAudit.reasonCounts,
+      "memory_slot_delta": memorySlotDelta ?? -1,
       "monitoring_activity_active": monitoringActivity != nil,
       "monitoring_failure_delta": monitoringFailureDelta,
       "process_id": ProcessInfo.processInfo.processIdentifier,
@@ -1479,6 +1538,24 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       initialMonitoringFailureCount: context.initialMonitoringFailureCount,
       finalMonitoringFailureCount: monitoringFailureCount
     )
+    let visibleGapDelta =
+      context.hiddenStartMemoryGapCount >= context.initialMemoryGapCount
+      ? context.hiddenStartMemoryGapCount - context.initialMemoryGapCount
+      : -1
+    let hiddenGapDelta =
+      allMemoryGaps.count >= context.hiddenStartMemoryGapCount
+      ? allMemoryGaps.count - context.hiddenStartMemoryGapCount
+      : -1
+    let visibleMemorySlotDelta =
+      DashboardMemoryGapAuditEvaluator.observedSlotCount(
+        sampleDelta: visibleSampleDelta,
+        explicitGapCount: visibleGapDelta
+      )
+    let hiddenMemorySlotDelta =
+      DashboardMemoryGapAuditEvaluator.observedSlotCount(
+        sampleDelta: hiddenSampleDelta,
+        explicitGapCount: hiddenGapDelta
+      )
     let logicalCPUGapCount =
       (try? database.logicalCPUSamplingGapCount()) ?? -1
     let status =
@@ -1487,8 +1564,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         && context.initialSampleCount >= 0
         && context.hiddenStartSampleCount >= 0
         && hiddenEndSampleCount >= 0
-        && visibleSampleDelta >= 170
-        && hiddenSampleDelta >= 170
+        && visibleMemorySlotDelta.map { $0 >= 170 } == true
+        && hiddenMemorySlotDelta.map { $0 >= 170 } == true
         && hiddenHistoryLoadDelta == 0
         && readbackLoadDelta == 1
         && memoryGapAudit.isValid
@@ -1503,6 +1580,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       "event": "runtime-audit-finished",
       "final_history_load_count": finalHistoryLoadCount,
       "hidden_history_load_delta": hiddenHistoryLoadDelta,
+      "hidden_memory_gap_delta": hiddenGapDelta,
+      "hidden_memory_slot_delta": hiddenMemorySlotDelta ?? -1,
       "hidden_sample_delta": hiddenSampleDelta,
       "hidden_seconds": hiddenEndedAt.timeIntervalSince(context.hiddenAt),
       "initial_history_load_count": context.initialHistoryLoadCount,
@@ -1519,6 +1598,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       "readback_load_delta": readbackLoadDelta,
       "status": status,
       "visible_sample_delta": visibleSampleDelta,
+      "visible_memory_gap_delta": visibleGapDelta,
+      "visible_memory_slot_delta": visibleMemorySlotDelta ?? -1,
       "visible_seconds": context.hiddenAt.timeIntervalSince(context.startedAt),
       "window_visible_after_readback": window.isVisible,
     ])

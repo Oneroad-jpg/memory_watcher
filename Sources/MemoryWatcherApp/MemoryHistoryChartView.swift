@@ -9,13 +9,10 @@ struct MemoryHistoryChartView: View {
     VStack(alignment: .leading, spacing: 12) {
       historyControls
 
-      if let snapshot = viewModel.historySnapshot,
+      if let snapshot = viewModel.historyRenderSnapshot,
         snapshot.period == viewModel.historyPeriod
       {
-        if snapshot.points.isEmpty
-          && snapshot.cpuHistory.totalPoints.isEmpty
-          && snapshot.cpuHistory.logicalPoints.isEmpty
-        {
+        if snapshot.isEmpty {
           emptyHistoryView
         } else {
           unifiedHistory(snapshot)
@@ -84,7 +81,9 @@ struct MemoryHistoryChartView: View {
   }
 
   @ViewBuilder
-  private func unifiedHistory(_ snapshot: MemoryHistorySnapshot) -> some View {
+  private func unifiedHistory(
+    _ snapshot: DashboardHistoryRenderSnapshot
+  ) -> some View {
     let selection = Binding<Date?>(
       get: { viewModel.selectedUTC },
       set: { viewModel.selectTimestamp($0) }
@@ -141,13 +140,13 @@ struct MemoryHistoryChartView: View {
 }
 
 private struct MemoryHistoryPanel: View {
-  let snapshot: MemoryHistorySnapshot
+  let snapshot: DashboardHistoryRenderSnapshot
   @Binding var selectedUTC: Date?
 
   private let gigabyte = 1_000_000_000.0
 
   var body: some View {
-    let points = displayPoints
+    let points = snapshot.memoryPoints
     let rows = compositionRows(from: points)
     let physicalMaximum = physicalMaximum(from: points)
     let swapMaximum = swapMaximum(from: points)
@@ -273,14 +272,6 @@ private struct MemoryHistoryPanel: View {
       RoundedRectangle(cornerRadius: 12)
         .stroke(Color.secondary.opacity(0.16))
     )
-  }
-
-  private var displayPoints: [MemoryHistoryPoint] {
-    let indices = DashboardDownsamplingPolicy.retainedIndices(
-      segmentIdentifiers: snapshot.points.map { "\($0.continuitySegment)" },
-      limit: DashboardChartPointBudget.primarySeriesLimit
-    )
-    return indices.map { snapshot.points[$0] }
   }
 
   private func compositionRows(

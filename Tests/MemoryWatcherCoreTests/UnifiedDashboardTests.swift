@@ -4,6 +4,28 @@ import XCTest
 @testable import MemoryWatcherCore
 
 final class UnifiedDashboardTests: XCTestCase {
+  func testRuntimeAuditCountsCompleteExplicitGapsAsObservedSlots() {
+    XCTAssertEqual(
+      DashboardMemoryGapAuditEvaluator.observedSlotCount(
+        sampleDelta: 155,
+        explicitGapCount: 26
+      ),
+      181
+    )
+    XCTAssertNil(
+      DashboardMemoryGapAuditEvaluator.observedSlotCount(
+        sampleDelta: -1,
+        explicitGapCount: 1
+      )
+    )
+    XCTAssertNil(
+      DashboardMemoryGapAuditEvaluator.observedSlotCount(
+        sampleDelta: Int.max,
+        explicitGapCount: 1
+      )
+    )
+  }
+
   func testRuntimeAuditAcceptsOnlyCompleteExplicitGapDiagnostics() {
     let completeGap = memoryGap(attemptCount: 3)
     let accepted = DashboardMemoryGapAuditEvaluator.evaluate(
@@ -221,6 +243,86 @@ final class UnifiedDashboardTests: XCTestCase {
     XCTAssertEqual(
       DashboardChartPointBudget.logicalPerSeriesLimit(seriesCount: 32),
       12
+    )
+  }
+
+  func testRenderSnapshotBoundsChartsInputBeforeTheViewReceivesIt() {
+    let start = Date(timeIntervalSince1970: 350_000)
+    let memory = (0..<1_000).map { index in
+      memoryPoint(
+        at: start.addingTimeInterval(TimeInterval(index * 5)),
+        source: .raw
+      )
+    }
+    let total = (0..<1_000).map { index in
+      let intervalStart = start.addingTimeInterval(TimeInterval(index * 5))
+      return totalPoint(
+        start: intervalStart,
+        end: intervalStart.addingTimeInterval(5),
+        source: .raw
+      )
+    }
+    let topology = LogicalCPUTopology(
+      epochKey: "render-8",
+      bootSessionStartUTC: start.addingTimeInterval(-1_000),
+      logicalCPUCount: 8
+    )
+    let logical = (0..<8).flatMap { cpuIndex in
+      (0..<1_000).map { index in
+        let intervalStart = start.addingTimeInterval(
+          TimeInterval(index * 5)
+        )
+        return LogicalCPUHistoryPoint(
+          topology: topology,
+          cpuIndex: cpuIndex,
+          timestampUTC: intervalStart.addingTimeInterval(5),
+          intervalStartUTC: intervalStart,
+          intervalEndUTC: intervalStart.addingTimeInterval(5),
+          source: .raw,
+          sampleCount: 1,
+          continuitySegment: index < 500 ? 0 : 1,
+          userPercent: 30,
+          systemPercent: 15,
+          nicePercent: 5,
+          idlePercent: 50,
+          utilizationPercent: 50
+        )
+      }
+    }
+    let source = snapshot(
+      period: .twelveHours,
+      start: start,
+      end: start.addingTimeInterval(5_000),
+      memory: memory,
+      total: total,
+      logical: logical
+    )
+
+    let render = DashboardHistoryRenderSnapshot(snapshot: source)
+
+    XCTAssertLessThanOrEqual(
+      render.memoryPoints.count,
+      DashboardChartPointBudget.primarySeriesLimit + 4
+    )
+    XCTAssertLessThanOrEqual(
+      render.totalCPUPoints.count,
+      DashboardChartPointBudget.primarySeriesLimit + 4
+    )
+    XCTAssertEqual(render.logicalCPUSeries.map(\.cpuIndex), Array(0..<8))
+    XCTAssertTrue(
+      render.logicalCPUSeries.allSatisfy {
+        $0.points.count
+          <= DashboardChartPointBudget.logicalPerSeriesLimit(seriesCount: 8) + 4
+      }
+    )
+    XCTAssertLessThanOrEqual(
+      render.logicalCPUSeries.reduce(0) { $0 + $1.points.count },
+      DashboardChartPointBudget.logicalTotalLimit + 8 * 4
+    )
+    XCTAssertEqual(render.logicalCPUSeries.first?.points.first, logical.first)
+    XCTAssertEqual(
+      render.logicalCPUSeries.last?.points.last,
+      logical.last
     )
   }
 

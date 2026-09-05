@@ -22,9 +22,7 @@ struct CurrentValuesRootView: View {
 
   var body: some View {
     VStack(spacing: 8) {
-      TimelineView(.periodic(from: .now, by: 5)) { context in
-        MonitoringStatusView(viewModel: viewModel, now: context.date)
-      }
+      MonitoringStatusView(viewModel: viewModel, now: Date())
       MonitoringErrorView(viewModel: viewModel)
     }
     .padding(.horizontal, 24)
