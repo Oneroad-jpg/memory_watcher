@@ -10,10 +10,11 @@ private struct DashboardSmokeConfiguration {
   let width: CGFloat
   let height: CGFloat
   let appearanceName: NSAppearance.Name
+  let layoutConfiguration: DashboardLayoutConfiguration
 
   init?(arguments: [String]) {
     guard
-      arguments.count == 6,
+      (6...7).contains(arguments.count),
       arguments[0] == "--dashboard-ui-smoke-test",
       let period = MemoryHistoryPeriod(rawValue: arguments[1]),
       let logicalCPUCount = Int(arguments[2]),
@@ -29,11 +30,25 @@ private struct DashboardSmokeConfiguration {
     case "dark": appearanceName = .darkAqua
     default: return nil
     }
+    let preset: DashboardLayoutPreset
+    if arguments.count == 7 {
+      guard let parsed = DashboardLayoutPreset(rawValue: arguments[6]) else {
+        return nil
+      }
+      preset = parsed
+    } else {
+      preset = .balanced
+    }
     self.period = period
     self.logicalCPUCount = logicalCPUCount
     self.width = CGFloat(width)
     self.height = CGFloat(height)
     self.appearanceName = appearanceName
+    layoutConfiguration = DashboardLayoutConfiguration(
+      preset: preset,
+      sectionOrder: DashboardLayoutConfiguration.canonicalSectionOrder,
+      hiddenSections: []
+    )
   }
 }
 
@@ -131,10 +146,18 @@ private struct DashboardHistoryInputFingerprint: Equatable {
 private final class DashboardContainerView: NSView {
   private let currentView: NSView
   private let historyView: NSView
+  private let layoutConfiguration: DashboardLayoutConfiguration
+  private(set) var lastCurrentPaneHeight: CGFloat = 0
+  private(set) var lastHistoryPaneHeight: CGFloat = 0
 
-  init(currentView: NSView, historyView: NSView) {
+  init(
+    currentView: NSView,
+    historyView: NSView,
+    layoutConfiguration: DashboardLayoutConfiguration
+  ) {
     self.currentView = currentView
     self.historyView = historyView
+    self.layoutConfiguration = layoutConfiguration.resolved()
     super.init(frame: .zero)
     addSubview(historyView)
     addSubview(currentView)
@@ -147,7 +170,14 @@ private final class DashboardContainerView: NSView {
 
   override func layout() {
     super.layout()
-    let currentHeight = min(360, max(220, bounds.height * 0.48))
+    let currentHeight = CGFloat(
+      DashboardLayoutPolicy.currentPaneHeight(
+        forAvailableHeight: Double(bounds.height),
+        preset: layoutConfiguration.preset
+      )
+    )
+    lastCurrentPaneHeight = currentHeight
+    lastHistoryPaneHeight = max(0, bounds.height - currentHeight)
     currentView.frame = NSRect(
       x: 0,
       y: bounds.height - currentHeight,
@@ -158,7 +188,7 @@ private final class DashboardContainerView: NSView {
       x: 0,
       y: 0,
       width: bounds.width,
-      height: max(0, bounds.height - currentHeight)
+      height: lastHistoryPaneHeight
     )
   }
 }
@@ -195,6 +225,11 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
 
   private var dashboardSmokeConfiguration: DashboardSmokeConfiguration? {
     DashboardSmokeConfiguration(arguments: arguments)
+  }
+
+  private var layoutConfiguration: DashboardLayoutConfiguration {
+    dashboardSmokeConfiguration?.layoutConfiguration
+      ?? .defaultConfiguration
   }
 
   private var isDashboardRuntimeAudit: Bool {
@@ -350,18 +385,21 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     let currentHostingView = NSHostingView(
       rootView: CurrentValuesRootView(
         viewModel: viewModel,
-        diagnostics: renderDiagnostics
+        diagnostics: renderDiagnostics,
+        layoutConfiguration: layoutConfiguration
       )
     )
     let historyHostingView = NSHostingView(
       rootView: HistoryRootView(
         viewModel: historyViewModel,
-        diagnostics: renderDiagnostics
+        diagnostics: renderDiagnostics,
+        layoutConfiguration: layoutConfiguration
       )
     )
     let contentView = DashboardContainerView(
       currentView: currentHostingView,
-      historyView: historyHostingView
+      historyView: historyHostingView,
+      layoutConfiguration: layoutConfiguration
     )
     let window = NSWindow(
       contentRect: NSRect(origin: .zero, size: requestedSize),
@@ -1771,6 +1809,16 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       let windowCount = NSApplication.shared.windows.filter {
         $0.title == "Memory Watcher" && $0.styleMask.contains(.titled)
       }.count
+      let container = window.contentView as? DashboardContainerView
+      let expectedCurrentPaneHeight = DashboardLayoutPolicy.currentPaneHeight(
+        forAvailableHeight: Double(window.contentLayoutRect.height),
+        preset: configuration.layoutConfiguration.preset
+      )
+      let layoutMetricsApplied =
+        container.map {
+          abs(Double($0.lastCurrentPaneHeight) - expectedCurrentPaneHeight) < 1
+            && $0.lastHistoryPaneHeight > 0
+        } ?? false
       let selectionMatches =
         selection?.memory != nil
         && selection?.totalCPU != nil
@@ -1787,6 +1835,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
           && window.isVisible
           && windowCount == 1
           && selectionMatches
+          && layoutMetricsApplied
         ? "PASS"
         : "FAIL"
       self.writeSmokeResult([
@@ -1798,6 +1847,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         "layout_mode": DashboardLayoutPolicy.mode(
           forAvailableWidth: Double(window.contentLayoutRect.width)
         ).rawValue,
+        "layout_metrics_applied": layoutMetricsApplied,
+        "layout_preset": configuration.layoutConfiguration.preset.rawValue,
         "logical_cpu_count": logicalIndices.count,
         "logical_cpu_point_count": snapshot.cpuHistory.logicalPoints.count,
         "period": configuration.period.rawValue,

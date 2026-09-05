@@ -5,6 +5,7 @@ import SwiftUI
 struct TotalCPUHistoryPanel: View {
   let snapshot: DashboardHistoryRenderSnapshot
   @Binding var selectedUTC: Date?
+  let layoutMetrics: DashboardLayoutMetrics
 
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
@@ -52,14 +53,14 @@ struct TotalCPUHistoryPanel: View {
       .chartYAxisLabel("%", position: .top)
       .chartLegend(.hidden)
       .chartXSelection(value: $selectedUTC)
-      .frame(height: 170)
+      .frame(height: layoutMetrics.totalCPUChartHeight)
       .accessibilityLabel("Mac全体CPU使用率の履歴")
 
       Text("空白 = UNKNOWN / sleep / 再起動 / 取得不能")
         .font(.caption)
         .foregroundStyle(.secondary)
     }
-    .dashboardPanel()
+    .dashboardPanel(padding: layoutMetrics.contentPadding * 0.65)
   }
 
   @AxisContentBuilder
@@ -86,6 +87,7 @@ struct TotalCPUHistoryPanel: View {
 struct LogicalCPUHistoryPanel: View {
   let snapshot: DashboardHistoryRenderSnapshot
   @Binding var selectedUTC: Date?
+  let layoutMetrics: DashboardLayoutMetrics
 
   var body: some View {
     let chartSeries = series
@@ -106,9 +108,16 @@ struct LogicalCPUHistoryPanel: View {
           .frame(maxWidth: .infinity, minHeight: 100)
       } else {
         LazyVGrid(
-          columns: [GridItem(.adaptive(minimum: 210), spacing: 10)],
+          columns: [
+            GridItem(
+              .adaptive(
+                minimum: layoutMetrics.logicalCPUHistoryMinimumWidth
+              ),
+              spacing: layoutMetrics.sectionSpacing
+            )
+          ],
           alignment: .leading,
-          spacing: 10
+          spacing: layoutMetrics.sectionSpacing
         ) {
           ForEach(chartSeries, id: \.id) { item in
             logicalChart(item)
@@ -120,7 +129,7 @@ struct LogicalCPUHistoryPanel: View {
         .font(.caption)
         .foregroundStyle(.secondary)
     }
-    .dashboardPanel()
+    .dashboardPanel(padding: layoutMetrics.contentPadding * 0.65)
     .accessibilityIdentifier("logical-cpu-history-grid")
   }
 
@@ -156,7 +165,7 @@ struct LogicalCPUHistoryPanel: View {
       }
       .chartLegend(.hidden)
       .chartXSelection(value: $selectedUTC)
-      .frame(height: 78)
+      .frame(height: layoutMetrics.logicalCPUChartHeight)
       .accessibilityLabel("\(item.displayName)使用率の履歴")
     }
     .padding(7)
@@ -173,6 +182,7 @@ struct LogicalCPUHistoryPanel: View {
 
 struct DashboardSelectionDetailView: View {
   let selection: DashboardHistorySelection?
+  let layoutMetrics: DashboardLayoutMetrics
   private let gigabyte = 1_000_000_000.0
 
   var body: some View {
@@ -241,7 +251,7 @@ struct DashboardSelectionDetailView: View {
           .foregroundStyle(.secondary)
       }
     }
-    .dashboardPanel()
+    .dashboardPanel(padding: layoutMetrics.contentPadding * 0.65)
     .accessibilityIdentifier("dashboard-selection-details")
   }
 
@@ -271,8 +281,8 @@ struct DashboardSelectionDetailView: View {
 }
 
 extension View {
-  fileprivate func dashboardPanel() -> some View {
-    padding(12)
+  fileprivate func dashboardPanel(padding: Double) -> some View {
+    self.padding(CGFloat(padding))
       .background(
         RoundedRectangle(cornerRadius: 12)
           .fill(Color(nsColor: .controlBackgroundColor))

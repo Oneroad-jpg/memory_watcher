@@ -19,15 +19,22 @@ final class DashboardRenderDiagnostics {
 struct CurrentValuesRootView: View {
   @ObservedObject var viewModel: MonitoringViewModel
   let diagnostics: DashboardRenderDiagnostics
+  let layoutConfiguration: DashboardLayoutConfiguration
 
   var body: some View {
-    VStack(spacing: 8) {
-      MonitoringStatusView(viewModel: viewModel, now: Date())
-      MonitoringErrorView(viewModel: viewModel)
+    let metrics = layoutConfiguration.resolved().preset.metrics
+    ScrollView {
+      VStack(spacing: metrics.sectionSpacing) {
+        MonitoringStatusView(
+          viewModel: viewModel,
+          now: Date(),
+          layoutMetrics: metrics
+        )
+        MonitoringErrorView(viewModel: viewModel)
+      }
+      .padding(.horizontal, metrics.contentPadding)
+      .padding(.vertical, max(8, metrics.contentPadding * 0.6))
     }
-    .padding(.horizontal, 24)
-    .padding(.top, 16)
-    .padding(.bottom, 8)
     .frame(minWidth: 780)
     .accessibilityIdentifier("memory-watcher-foundation-ready")
     #if DEBUG
@@ -45,13 +52,18 @@ struct CurrentValuesRootView: View {
 struct HistoryRootView: View {
   @ObservedObject var viewModel: HistoryViewModel
   let diagnostics: DashboardRenderDiagnostics
+  let layoutConfiguration: DashboardLayoutConfiguration
 
   var body: some View {
+    let metrics = layoutConfiguration.resolved().preset.metrics
     ScrollView {
-      MemoryHistoryChartView(viewModel: viewModel)
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, 24)
+      MemoryHistoryChartView(
+        viewModel: viewModel,
+        layoutConfiguration: layoutConfiguration
+      )
+      .padding(.horizontal, metrics.contentPadding)
+      .padding(.top, metrics.sectionSpacing)
+      .padding(.bottom, metrics.contentPadding)
     }
     .frame(minWidth: 780, minHeight: 400)
     .accessibilityIdentifier("memory-watcher-history-root")
@@ -102,6 +114,7 @@ struct HistoryRootView: View {
 private struct MonitoringStatusView: View {
   @ObservedObject var viewModel: MonitoringViewModel
   let now: Date
+  let layoutMetrics: DashboardLayoutMetrics
 
   var body: some View {
     VStack(spacing: 12) {
@@ -145,9 +158,16 @@ private struct MonitoringStatusView: View {
         }
       } else {
         LazyVGrid(
-          columns: [GridItem(.adaptive(minimum: 104), spacing: 6)],
+          columns: [
+            GridItem(
+              .adaptive(
+                minimum: layoutMetrics.logicalCPUCurrentMinimumWidth
+              ),
+              spacing: layoutMetrics.sectionSpacing * 0.6
+            )
+          ],
           alignment: .leading,
-          spacing: 6
+          spacing: layoutMetrics.sectionSpacing * 0.6
         ) {
           ForEach(logicalCPUs, id: \.cpuIndex) { cpu in
             logicalCPUMeter(cpu)

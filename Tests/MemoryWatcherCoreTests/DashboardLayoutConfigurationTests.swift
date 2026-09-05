@@ -117,4 +117,51 @@ final class DashboardLayoutConfigurationTests: XCTestCase {
 
     XCTAssertEqual(decoded.resolved(), original)
   }
+
+  func testVisibleSectionsPreserveResolvedOrder() {
+    let configuration = DashboardLayoutConfiguration(
+      preset: .compact,
+      sectionOrder: [
+        .selectionDetails,
+        .totalCPUHistory,
+        .memoryHistory,
+        .logicalCPUHistory,
+      ],
+      hiddenSections: [.selectionDetails]
+    )
+
+    XCTAssertEqual(
+      configuration.visibleSections,
+      [.totalCPUHistory, .memoryHistory, .logicalCPUHistory]
+    )
+    XCTAssertFalse(configuration.usesCanonicalSectionOrder)
+    XCTAssertTrue(
+      DashboardLayoutConfiguration.defaultConfiguration
+        .usesCanonicalSectionOrder
+    )
+  }
+
+  func testCurrentPaneHeightUsesPresetFractionAndBounds() {
+    XCTAssertEqual(
+      DashboardLayoutPolicy.currentPaneHeight(
+        forAvailableHeight: 400,
+        preset: .compact
+      ),
+      170
+    )
+    XCTAssertEqual(
+      DashboardLayoutPolicy.currentPaneHeight(
+        forAvailableHeight: 600,
+        preset: .balanced
+      ),
+      252
+    )
+    XCTAssertEqual(
+      DashboardLayoutPolicy.currentPaneHeight(
+        forAvailableHeight: 1_200,
+        preset: .detailed
+      ),
+      380
+    )
+  }
 }

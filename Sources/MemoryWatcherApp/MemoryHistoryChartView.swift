@@ -4,9 +4,11 @@ import SwiftUI
 
 struct MemoryHistoryChartView: View {
   @ObservedObject var viewModel: HistoryViewModel
+  let layoutConfiguration: DashboardLayoutConfiguration
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    let metrics = layoutConfiguration.resolved().preset.metrics
+    VStack(alignment: .leading, spacing: CGFloat(metrics.sectionSpacing)) {
       historyControls
 
       if let snapshot = viewModel.historyRenderSnapshot,
@@ -15,7 +17,7 @@ struct MemoryHistoryChartView: View {
         if snapshot.isEmpty {
           emptyHistoryView
         } else {
-          unifiedHistory(snapshot)
+          unifiedHistory(snapshot, metrics: metrics)
         }
       } else if viewModel.historyIsLoading {
         ProgressView("履歴を読み込んでいます")
@@ -32,7 +34,7 @@ struct MemoryHistoryChartView: View {
           .accessibilityIdentifier("dashboard-history-error")
       }
     }
-    .padding(16)
+    .padding(CGFloat(metrics.contentPadding * 0.75))
     .background(
       RoundedRectangle(cornerRadius: 14)
         .fill(Color(nsColor: .windowBackgroundColor))
@@ -82,37 +84,74 @@ struct MemoryHistoryChartView: View {
 
   @ViewBuilder
   private func unifiedHistory(
-    _ snapshot: DashboardHistoryRenderSnapshot
+    _ snapshot: DashboardHistoryRenderSnapshot,
+    metrics: DashboardLayoutMetrics
   ) -> some View {
+    let configuration = layoutConfiguration.resolved()
     let selection = Binding<Date?>(
       get: { viewModel.selectedUTC },
       set: { viewModel.selectTimestamp($0) }
     )
 
-    VStack(alignment: .leading, spacing: 12) {
-      ViewThatFits(in: .horizontal) {
-        HStack(alignment: .top, spacing: 12) {
-          LogicalCPUHistoryPanel(
-            snapshot: snapshot,
-            selectedUTC: selection
-          )
-          .frame(minWidth: 280, idealWidth: 320, maxWidth: 350)
+    VStack(
+      alignment: .leading,
+      spacing: CGFloat(metrics.sectionSpacing)
+    ) {
+      if configuration.usesCanonicalSectionOrder {
+        ViewThatFits(in: .horizontal) {
+          HStack(alignment: .top, spacing: CGFloat(metrics.sectionSpacing)) {
+            if configuration.isVisible(.logicalCPUHistory) {
+              LogicalCPUHistoryPanel(
+                snapshot: snapshot,
+                selectedUTC: selection,
+                layoutMetrics: metrics
+              )
+              .frame(
+                minWidth: metrics.logicalCPUHistoryMinimumWidth,
+                idealWidth: metrics.logicalCPUHistoryMinimumWidth + 40,
+                maxWidth: metrics.logicalCPUHistoryMinimumWidth + 100
+              )
+            }
 
-          VStack(spacing: 12) {
-            MemoryHistoryPanel(snapshot: snapshot, selectedUTC: selection)
-            TotalCPUHistoryPanel(snapshot: snapshot, selectedUTC: selection)
+            VStack(spacing: CGFloat(metrics.sectionSpacing)) {
+              MemoryHistoryPanel(
+                snapshot: snapshot,
+                selectedUTC: selection,
+                layoutMetrics: metrics
+              )
+              TotalCPUHistoryPanel(
+                snapshot: snapshot,
+                selectedUTC: selection,
+                layoutMetrics: metrics
+              )
+            }
+            .frame(minWidth: 500)
           }
-          .frame(minWidth: 540)
+
+          stackedSections(
+            configuration.visibleSections.filter {
+              $0 != .selectionDetails
+            },
+            snapshot: snapshot,
+            selection: selection,
+            metrics: metrics
+          )
         }
 
-        VStack(spacing: 12) {
-          MemoryHistoryPanel(snapshot: snapshot, selectedUTC: selection)
-          TotalCPUHistoryPanel(snapshot: snapshot, selectedUTC: selection)
-          LogicalCPUHistoryPanel(snapshot: snapshot, selectedUTC: selection)
+        if configuration.isVisible(.selectionDetails) {
+          DashboardSelectionDetailView(
+            selection: viewModel.selectedDetails,
+            layoutMetrics: metrics
+          )
         }
+      } else {
+        stackedSections(
+          configuration.visibleSections,
+          snapshot: snapshot,
+          selection: selection,
+          metrics: metrics
+        )
       }
-
-      DashboardSelectionDetailView(selection: viewModel.selectedDetails)
     }
     .overlay(alignment: .topTrailing) {
       if viewModel.historyIsLoading {
@@ -121,6 +160,58 @@ struct MemoryHistoryChartView: View {
           .padding(6)
           .background(.regularMaterial, in: Circle())
       }
+    }
+  }
+
+  private func stackedSections(
+    _ sections: [DashboardLayoutSection],
+    snapshot: DashboardHistoryRenderSnapshot,
+    selection: Binding<Date?>,
+    metrics: DashboardLayoutMetrics
+  ) -> some View {
+    VStack(spacing: CGFloat(metrics.sectionSpacing)) {
+      ForEach(sections, id: \.self) { section in
+        sectionView(
+          section,
+          snapshot: snapshot,
+          selection: selection,
+          metrics: metrics
+        )
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func sectionView(
+    _ section: DashboardLayoutSection,
+    snapshot: DashboardHistoryRenderSnapshot,
+    selection: Binding<Date?>,
+    metrics: DashboardLayoutMetrics
+  ) -> some View {
+    switch section {
+    case .memoryHistory:
+      MemoryHistoryPanel(
+        snapshot: snapshot,
+        selectedUTC: selection,
+        layoutMetrics: metrics
+      )
+    case .totalCPUHistory:
+      TotalCPUHistoryPanel(
+        snapshot: snapshot,
+        selectedUTC: selection,
+        layoutMetrics: metrics
+      )
+    case .logicalCPUHistory:
+      LogicalCPUHistoryPanel(
+        snapshot: snapshot,
+        selectedUTC: selection,
+        layoutMetrics: metrics
+      )
+    case .selectionDetails:
+      DashboardSelectionDetailView(
+        selection: viewModel.selectedDetails,
+        layoutMetrics: metrics
+      )
     }
   }
 
@@ -142,6 +233,7 @@ struct MemoryHistoryChartView: View {
 private struct MemoryHistoryPanel: View {
   let snapshot: DashboardHistoryRenderSnapshot
   @Binding var selectedUTC: Date?
+  let layoutMetrics: DashboardLayoutMetrics
 
   private let gigabyte = 1_000_000_000.0
 
@@ -206,7 +298,7 @@ private struct MemoryHistoryPanel: View {
       .chartYAxisLabel("GB", position: .top)
       .chartLegend(.hidden)
       .chartXSelection(value: $selectedUTC)
-      .frame(height: 235)
+      .frame(height: layoutMetrics.memoryChartHeight)
       .accessibilityLabel("メモリ使用量の構成グラフ")
 
       Text("スワップ")
@@ -234,7 +326,7 @@ private struct MemoryHistoryPanel: View {
       .chartYAxisLabel("GB", position: .top)
       .chartLegend(.hidden)
       .chartXSelection(value: $selectedUTC)
-      .frame(height: 82)
+      .frame(height: layoutMetrics.swapChartHeight)
       .accessibilityLabel("スワップ使用量グラフ")
 
       HStack(spacing: 10) {
@@ -263,7 +355,7 @@ private struct MemoryHistoryPanel: View {
       .frame(height: 24)
       .accessibilityLabel("メモリプレッシャー履歴")
     }
-    .padding(12)
+    .padding(CGFloat(layoutMetrics.contentPadding * 0.65))
     .background(
       RoundedRectangle(cornerRadius: 12)
         .fill(Color(nsColor: .controlBackgroundColor))
