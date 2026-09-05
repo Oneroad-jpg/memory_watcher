@@ -263,6 +263,20 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  public func sampleCount(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> Int {
+    try locked {
+      try countRows(
+        in: "memory_samples",
+        timestampColumn: "timestamp_utc_microseconds",
+        from: startUTC,
+        through: endUTC
+      )
+    }
+  }
+
   public func pressureObservationCount() throws -> Int {
     try locked {
       try countRows(in: "memory_pressure_observations")
@@ -275,6 +289,20 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     }
   }
 
+  public func samplingGapCount(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> Int {
+    try locked {
+      try countRows(
+        in: "memory_sampling_gaps",
+        timestampColumn: "timestamp_utc_microseconds",
+        from: startUTC,
+        through: endUTC
+      )
+    }
+  }
+
   public func lifecycleEventCount() throws -> Int {
     try locked {
       try countRows(in: "system_lifecycle_events")
@@ -284,6 +312,20 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
   public func totalCPUSampleCount() throws -> Int {
     try locked {
       try countRows(in: "total_cpu_samples")
+    }
+  }
+
+  public func totalCPUSampleCount(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> Int {
+    try locked {
+      try countRows(
+        in: "total_cpu_samples",
+        timestampColumn: "interval_end_utc_microseconds",
+        from: startUTC,
+        through: endUTC
+      )
     }
   }
 
@@ -931,6 +973,57 @@ public final class MemoryWatcherDatabase: @unchecked Sendable {
     )
     guard value >= 0, let count = Int(exactly: value) else {
       throw MemoryWatcherDatabaseError.unexpectedRow(operation: "count \(table)")
+    }
+    return count
+  }
+
+  private func countRows(
+    in table: String,
+    timestampColumn: String,
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> Int {
+    let allowedTarget =
+      (table == "memory_samples"
+        && timestampColumn == "timestamp_utc_microseconds")
+      || (table == "memory_sampling_gaps"
+        && timestampColumn == "timestamp_utc_microseconds")
+      || (table == "total_cpu_samples"
+        && timestampColumn == "interval_end_utc_microseconds")
+      || (table == "logical_cpu_sampling_gaps"
+        && timestampColumn == "timestamp_utc_microseconds")
+    guard allowedTarget else {
+      throw MemoryWatcherDatabaseError.invalidValue(field: "count range")
+    }
+    let statement = try prepare(
+      """
+      SELECT COUNT(*)
+      FROM \(table)
+      WHERE \(timestampColumn) >= ?
+        AND \(timestampColumn) <= ?
+      """,
+      operation: "prepare ranged count for \(table)"
+    )
+    defer { sqlite3_finalize(statement) }
+    try bindDateRange(
+      startUTC: startUTC,
+      endUTC: endUTC,
+      to: statement,
+      field: "\(table) count range"
+    )
+    let code = sqlite3_step(statement)
+    guard code == SQLITE_ROW else {
+      throw sqliteError(operation: "count ranged \(table)", code: code)
+    }
+    let value = sqlite3_column_int64(statement, 0)
+    guard
+      sqlite3_step(statement) == SQLITE_DONE,
+      value >= 0,
+      let count = Int(exactly: value)
+    else {
+      throw MemoryWatcherDatabaseError.unexpectedRow(
+        operation: "count ranged \(table)"
+      )
     }
     return count
   }
@@ -2416,6 +2509,20 @@ extension MemoryWatcherDatabase {
 
   public func logicalCPUSamplingGapCount() throws -> Int {
     try locked { try countRows(in: "logical_cpu_sampling_gaps") }
+  }
+
+  public func logicalCPUSamplingGapCount(
+    from startUTC: Date,
+    through endUTC: Date
+  ) throws -> Int {
+    try locked {
+      try countRows(
+        in: "logical_cpu_sampling_gaps",
+        timestampColumn: "timestamp_utc_microseconds",
+        from: startUTC,
+        through: endUTC
+      )
+    }
   }
 
   public func logicalCPUAggregateCount(
