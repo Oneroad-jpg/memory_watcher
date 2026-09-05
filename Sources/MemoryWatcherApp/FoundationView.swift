@@ -18,17 +18,18 @@ final class DashboardRenderDiagnostics {
 
 struct CurrentValuesRootView: View {
   @ObservedObject var viewModel: MonitoringViewModel
+  @ObservedObject var layoutViewModel: DashboardLayoutViewModel
   let diagnostics: DashboardRenderDiagnostics
-  let layoutConfiguration: DashboardLayoutConfiguration
 
   var body: some View {
-    let metrics = layoutConfiguration.resolved().preset.metrics
+    let metrics = layoutViewModel.configuration.preset.metrics
     ScrollView {
       VStack(spacing: metrics.sectionSpacing) {
         MonitoringStatusView(
           viewModel: viewModel,
           now: Date(),
-          layoutMetrics: metrics
+          layoutMetrics: metrics,
+          openLayoutEditor: layoutViewModel.presentEditor
         )
         MonitoringErrorView(viewModel: viewModel)
       }
@@ -37,11 +38,15 @@ struct CurrentValuesRootView: View {
     }
     .frame(minWidth: 780)
     .accessibilityIdentifier("memory-watcher-foundation-ready")
+    .sheet(isPresented: $layoutViewModel.isEditorPresented) {
+      DashboardLayoutEditorView(viewModel: layoutViewModel)
+    }
     #if DEBUG
       .background(
         DashboardRenderProbe(
           root: .current,
           revision: viewModel.currentValuesRevision,
+          layoutRevision: layoutViewModel.revision,
           diagnostics: diagnostics
         )
       )
@@ -51,15 +56,16 @@ struct CurrentValuesRootView: View {
 
 struct HistoryRootView: View {
   @ObservedObject var viewModel: HistoryViewModel
+  @ObservedObject var layoutViewModel: DashboardLayoutViewModel
   let diagnostics: DashboardRenderDiagnostics
-  let layoutConfiguration: DashboardLayoutConfiguration
 
   var body: some View {
-    let metrics = layoutConfiguration.resolved().preset.metrics
+    let configuration = layoutViewModel.configuration
+    let metrics = configuration.preset.metrics
     ScrollView {
       MemoryHistoryChartView(
         viewModel: viewModel,
-        layoutConfiguration: layoutConfiguration
+        layoutConfiguration: configuration
       )
       .padding(.horizontal, metrics.contentPadding)
       .padding(.top, metrics.sectionSpacing)
@@ -72,6 +78,7 @@ struct HistoryRootView: View {
         DashboardRenderProbe(
           root: .history,
           revision: viewModel.historyGeneration,
+          layoutRevision: layoutViewModel.revision,
           diagnostics: diagnostics
         )
       )
@@ -89,6 +96,7 @@ struct HistoryRootView: View {
   private struct DashboardRenderProbe: NSViewRepresentable {
     let root: DashboardRenderRoot
     let revision: UInt64
+    let layoutRevision: UInt64
     let diagnostics: DashboardRenderDiagnostics
 
     func makeNSView(context: Context) -> NSView {
@@ -115,6 +123,7 @@ private struct MonitoringStatusView: View {
   @ObservedObject var viewModel: MonitoringViewModel
   let now: Date
   let layoutMetrics: DashboardLayoutMetrics
+  let openLayoutEditor: () -> Void
 
   var body: some View {
     VStack(spacing: 12) {
@@ -147,6 +156,13 @@ private struct MonitoringStatusView: View {
           )
           statusValue(title: "CPU全体", value: totalCPUText)
         }
+
+        Button(action: openLayoutEditor) {
+          Label("表示設定", systemImage: "slider.horizontal.3")
+        }
+        .keyboardShortcut(",", modifiers: .command)
+        .accessibilityHint("表示密度、項目の順序、表示状態を変更します")
+        .accessibilityIdentifier("dashboard-layout-settings-button")
       }
 
       if logicalCPUs.isEmpty {

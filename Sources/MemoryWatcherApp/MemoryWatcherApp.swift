@@ -146,7 +146,7 @@ private struct DashboardHistoryInputFingerprint: Equatable {
 private final class DashboardContainerView: NSView {
   private let currentView: NSView
   private let historyView: NSView
-  private let layoutConfiguration: DashboardLayoutConfiguration
+  private var layoutConfiguration: DashboardLayoutConfiguration
   private(set) var lastCurrentPaneHeight: CGFloat = 0
   private(set) var lastHistoryPaneHeight: CGFloat = 0
 
@@ -166,6 +166,12 @@ private final class DashboardContainerView: NSView {
   @available(*, unavailable)
   required init?(coder: NSCoder) {
     nil
+  }
+
+  func apply(_ configuration: DashboardLayoutConfiguration) {
+    layoutConfiguration = configuration.resolved()
+    needsLayout = true
+    layoutSubtreeIfNeeded()
   }
 
   override func layout() {
@@ -201,6 +207,25 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
   private let viewModel = MonitoringViewModel()
   private let historyViewModel = HistoryViewModel()
   private let renderDiagnostics = DashboardRenderDiagnostics()
+  private let layoutDefaultsSuiteName: String? = {
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    guard arguments == ["--layout-editor-ui-smoke-test"] else {
+      return nil
+    }
+    return "com.oneroad.memorywatcher.layout-smoke.\(UUID().uuidString)"
+  }()
+  private lazy var layoutStore: DashboardLayoutConfigurationStore = {
+    let defaults =
+      layoutDefaultsSuiteName.flatMap(UserDefaults.init(suiteName:))
+      ?? .standard
+    return DashboardLayoutConfigurationStore(userDefaults: defaults)
+  }()
+  private lazy var layoutViewModel: DashboardLayoutViewModel = {
+    if let configuration = dashboardSmokeConfiguration?.layoutConfiguration {
+      return DashboardLayoutViewModel(configuration: configuration)
+    }
+    return DashboardLayoutViewModel(store: layoutStore)
+  }()
   private var database: MemoryWatcherDatabase?
   private var engine: MemoryMonitoringEngine?
   private var window: NSWindow?
@@ -220,6 +245,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       || isDashboardPerformanceAudit
       || isDashboardT21Audit
       || dashboardSmokeConfiguration != nil
+      || isLayoutEditorSmokeTest
       || isRenderIsolationSmokeTest
   }
 
@@ -227,9 +253,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     DashboardSmokeConfiguration(arguments: arguments)
   }
 
-  private var layoutConfiguration: DashboardLayoutConfiguration {
-    dashboardSmokeConfiguration?.layoutConfiguration
-      ?? .defaultConfiguration
+  private var isLayoutEditorSmokeTest: Bool {
+    arguments == ["--layout-editor-ui-smoke-test"]
   }
 
   private var isDashboardRuntimeAudit: Bool {
@@ -282,6 +307,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       runHistoryUISmokeTest()
     } else if let configuration = dashboardSmokeConfiguration {
       runDashboardUISmokeTest(configuration)
+    } else if isLayoutEditorSmokeTest {
+      runLayoutEditorUISmokeTest()
     } else if isRenderIsolationSmokeTest {
       runRenderIsolationSmokeTest()
     } else if isDashboardPerformanceAudit {
@@ -313,6 +340,11 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     NotificationCenter.default.removeObserver(self)
     if let temporaryDirectory {
       try? FileManager.default.removeItem(at: temporaryDirectory)
+    }
+    if let layoutDefaultsSuiteName {
+      UserDefaults.standard.removePersistentDomain(
+        forName: layoutDefaultsSuiteName
+      )
     }
   }
 
@@ -385,22 +417,25 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     let currentHostingView = NSHostingView(
       rootView: CurrentValuesRootView(
         viewModel: viewModel,
-        diagnostics: renderDiagnostics,
-        layoutConfiguration: layoutConfiguration
+        layoutViewModel: layoutViewModel,
+        diagnostics: renderDiagnostics
       )
     )
     let historyHostingView = NSHostingView(
       rootView: HistoryRootView(
         viewModel: historyViewModel,
-        diagnostics: renderDiagnostics,
-        layoutConfiguration: layoutConfiguration
+        layoutViewModel: layoutViewModel,
+        diagnostics: renderDiagnostics
       )
     )
     let contentView = DashboardContainerView(
       currentView: currentHostingView,
       historyView: historyHostingView,
-      layoutConfiguration: layoutConfiguration
+      layoutConfiguration: layoutViewModel.configuration
     )
+    layoutViewModel.configurationDidChange = { [weak contentView] configuration in
+      contentView?.apply(configuration)
+    }
     let window = NSWindow(
       contentRect: NSRect(origin: .zero, size: requestedSize),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -694,6 +729,196 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       configuration,
       deadline: Date().addingTimeInterval(8)
     )
+  }
+
+  private func runLayoutEditorUISmokeTest() {
+    waitForLayoutEditorUISmokeTestReady(
+      deadline: Date().addingTimeInterval(8)
+    )
+  }
+
+  private func waitForLayoutEditorUISmokeTestReady(deadline: Date) {
+    guard Date() < deadline else {
+      writeSmokeResult([
+        "reason": "dashboard did not become ready for layout editor",
+        "status": "FAIL",
+      ])
+      NSApplication.shared.terminate(nil)
+      return
+    }
+    guard
+      let database,
+      let engine,
+      let window,
+      let snapshot = historyViewModel.historySnapshot,
+      snapshot.period == .threeDays,
+      !historyViewModel.historyIsLoading
+    else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        self?.waitForLayoutEditorUISmokeTestReady(deadline: deadline)
+      }
+      return
+    }
+
+    let engineIdentity = ObjectIdentifier(engine)
+    let databaseIdentity = ObjectIdentifier(database)
+    let historyLoadCount = historyViewModel.historyLoadRequestCount
+    let currentRenderCount = renderDiagnostics.currentRootUpdateCount
+    let historyRenderCount = renderDiagnostics.historyRootUpdateCount
+    layoutViewModel.presentEditor()
+    waitForLayoutEditorSheet(
+      engineIdentity: engineIdentity,
+      databaseIdentity: databaseIdentity,
+      historyLoadCount: historyLoadCount,
+      currentRenderCount: currentRenderCount,
+      historyRenderCount: historyRenderCount,
+      deadline: Date().addingTimeInterval(3),
+      window: window
+    )
+  }
+
+  private func waitForLayoutEditorSheet(
+    engineIdentity: ObjectIdentifier,
+    databaseIdentity: ObjectIdentifier,
+    historyLoadCount: UInt64,
+    currentRenderCount: UInt64,
+    historyRenderCount: UInt64,
+    deadline: Date,
+    window: NSWindow
+  ) {
+    guard Date() < deadline else {
+      writeSmokeResult([
+        "reason": "layout editor sheet did not appear",
+        "status": "FAIL",
+      ])
+      NSApplication.shared.terminate(nil)
+      return
+    }
+    guard window.attachedSheet != nil else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        self?.waitForLayoutEditorSheet(
+          engineIdentity: engineIdentity,
+          databaseIdentity: databaseIdentity,
+          historyLoadCount: historyLoadCount,
+          currentRenderCount: currentRenderCount,
+          historyRenderCount: historyRenderCount,
+          deadline: deadline,
+          window: window
+        )
+      }
+      return
+    }
+
+    layoutViewModel.setPreset(.compact)
+    layoutViewModel.setVisible(false, for: .logicalCPUHistory)
+    layoutViewModel.move(.selectionDetails, by: -1)
+    window.contentView?.layoutSubtreeIfNeeded()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+      self?.finishLayoutEditorUISmokeTest(
+        engineIdentity: engineIdentity,
+        databaseIdentity: databaseIdentity,
+        historyLoadCount: historyLoadCount,
+        currentRenderCount: currentRenderCount,
+        historyRenderCount: historyRenderCount,
+        window: window
+      )
+    }
+  }
+
+  private func finishLayoutEditorUISmokeTest(
+    engineIdentity: ObjectIdentifier,
+    databaseIdentity: ObjectIdentifier,
+    historyLoadCount: UInt64,
+    currentRenderCount: UInt64,
+    historyRenderCount: UInt64,
+    window: NSWindow
+  ) {
+    guard
+      let engine,
+      let database,
+      let container = window.contentView as? DashboardContainerView
+    else {
+      writeSmokeResult([
+        "reason": "layout editor lost dashboard dependencies",
+        "status": "FAIL",
+      ])
+      NSApplication.shared.terminate(nil)
+      return
+    }
+
+    let expected = DashboardLayoutConfiguration(
+      preset: .compact,
+      sectionOrder: [
+        .memoryHistory,
+        .totalCPUHistory,
+        .selectionDetails,
+        .logicalCPUHistory,
+      ],
+      hiddenSections: [.logicalCPUHistory]
+    )
+    let stored = layoutStore.load()
+    let restored = DashboardLayoutViewModel(store: layoutStore).configuration
+    let expectedPaneHeight = DashboardLayoutPolicy.currentPaneHeight(
+      forAvailableHeight: Double(window.contentLayoutRect.height),
+      preset: .compact
+    )
+    let editedStatePassed =
+      layoutViewModel.configuration == expected
+      && stored == expected
+      && restored == expected
+      && abs(Double(container.lastCurrentPaneHeight) - expectedPaneHeight) < 1
+    let dependenciesUnchanged =
+      ObjectIdentifier(engine) == engineIdentity
+      && ObjectIdentifier(database) == databaseIdentity
+      && historyViewModel.historyLoadRequestCount == historyLoadCount
+    let rootsUpdated =
+      renderDiagnostics.currentRootUpdateCount > currentRenderCount
+      && renderDiagnostics.historyRootUpdateCount > historyRenderCount
+    let currentRootUpdateDelta =
+      renderDiagnostics.currentRootUpdateCount - currentRenderCount
+    let historyRootUpdateDelta =
+      renderDiagnostics.historyRootUpdateCount - historyRenderCount
+    let sheetWasVisible = window.attachedSheet != nil
+
+    layoutViewModel.reset()
+    let resetPassed =
+      layoutViewModel.configuration == .defaultConfiguration
+      && layoutStore.load() == .defaultConfiguration
+    layoutViewModel.isEditorPresented = false
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+      guard let self else { return }
+      let sheetDismissed = window.attachedSheet == nil
+      let integrity = (try? database.integrityCheck()) ?? "unavailable"
+      let status =
+        editedStatePassed
+          && dependenciesUnchanged
+          && rootsUpdated
+          && sheetWasVisible
+          && sheetDismissed
+          && resetPassed
+          && engine.state == .running
+          && integrity == "ok"
+        ? "PASS"
+        : "FAIL"
+      self.writeSmokeResult([
+        "current_root_update_delta": currentRootUpdateDelta,
+        "database_identity_unchanged":
+          ObjectIdentifier(database) == databaseIdentity,
+        "editor_sheet_dismissed": sheetDismissed,
+        "editor_sheet_visible": sheetWasVisible,
+        "engine_identity_unchanged": ObjectIdentifier(engine) == engineIdentity,
+        "history_reload_delta":
+          self.historyViewModel.historyLoadRequestCount - historyLoadCount,
+        "history_root_update_delta": historyRootUpdateDelta,
+        "immediate_layout_applied": editedStatePassed,
+        "integrity_check": integrity,
+        "reset_persisted": resetPassed,
+        "restart_restore_matches": restored == expected,
+        "roots_updated": rootsUpdated,
+        "status": status,
+      ])
+      NSApplication.shared.terminate(nil)
+    }
   }
 
   private func runRenderIsolationSmokeTest() {
