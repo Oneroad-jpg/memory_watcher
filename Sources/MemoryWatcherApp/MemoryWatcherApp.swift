@@ -107,6 +107,36 @@ private struct DashboardPeriodReadbackResult {
   }
 }
 
+private struct Phase21HistoryReadbackResult {
+  let period: MemoryHistoryPeriod
+  let expectedSource: MemoryHistoryPointSource
+  let memoryPointCount: Int
+  let totalCPUPointCount: Int
+  let logicalCPUPointCount: Int
+  let logicalCPUCount: Int
+  let matchedSelectionCount: Int
+  let sleepIntervalCount: Int
+  let unknownPressureIntervalCount: Int
+  let samplingGapCount: Int
+  let isValid: Bool
+
+  var jsonValue: [String: Any] {
+    [
+      "expected_source": expectedSource.rawValue,
+      "logical_cpu_count": logicalCPUCount,
+      "logical_cpu_point_count": logicalCPUPointCount,
+      "matched_selection_count": matchedSelectionCount,
+      "memory_point_count": memoryPointCount,
+      "period": period.rawValue,
+      "sampling_gap_count": samplingGapCount,
+      "sleep_interval_count": sleepIntervalCount,
+      "status": isValid ? "PASS" : "FAIL",
+      "total_cpu_point_count": totalCPUPointCount,
+      "unknown_pressure_interval_count": unknownPressureIntervalCount,
+    ]
+  }
+}
+
 private struct DashboardHistoryInputFingerprint: Equatable {
   let period: MemoryHistoryPeriod
   let startUTC: Date
@@ -209,10 +239,14 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
   private let renderDiagnostics = DashboardRenderDiagnostics()
   private let layoutDefaultsSuiteName: String? = {
     let arguments = Array(CommandLine.arguments.dropFirst())
-    guard arguments == ["--layout-editor-ui-smoke-test"] else {
+    guard
+      arguments == ["--layout-editor-ui-smoke-test"]
+        || arguments == ["--dashboard-t21-audit"]
+        || arguments == ["--phase21-history-readback"]
+    else {
       return nil
     }
-    return "com.oneroad.memorywatcher.layout-smoke.\(UUID().uuidString)"
+    return "com.oneroad.memorywatcher.layout-audit.\(UUID().uuidString)"
   }()
   private lazy var layoutStore: DashboardLayoutConfigurationStore = {
     let defaults =
@@ -269,6 +303,10 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     arguments == ["--dashboard-t21-audit"]
   }
 
+  private var isPhase21HistoryReadback: Bool {
+    arguments == ["--phase21-history-readback"]
+  }
+
   private var isRenderIsolationSmokeTest: Bool {
     arguments == ["--render-isolation-smoke-test"]
   }
@@ -284,6 +322,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       || arguments == ["--login-item-smoke-test"]
       || isHistoryUITest
       || isDashboardRuntimeAudit
+      || isPhase21HistoryReadback
       || arguments == ["--menu-bar-preview"]
   }
 
@@ -315,6 +354,8 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       runDashboardPerformanceAudit()
     } else if isDashboardT21Audit {
       runDashboardT21Audit()
+    } else if isPhase21HistoryReadback {
+      runPhase21HistoryReadback()
     } else if isDashboardRuntimeAudit {
       runDashboardRuntimeAudit()
     } else if arguments == ["--menu-bar-smoke-test"] {
@@ -352,6 +393,17 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     do {
       let databaseURL = try monitoringDatabaseURL()
       let database = try MemoryWatcherDatabase(url: databaseURL)
+      if isPhase21HistoryReadback {
+        self.database = database
+        let startedAt = Date()
+        historyViewModel.configure(
+          database: database,
+          initialPeriod: .twentyFourHours,
+          now: Date()
+        )
+        historyScreenStartedAt = startedAt
+        return
+      }
       if isHistoryUITest {
         let now = HistoryUISmokeFixture.minuteAlignedReferenceDate(
           containing: Date()
@@ -1171,7 +1223,198 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
   }
 
   private func runDashboardT21Audit() {
+    historyViewModel.setUserInitiatedReloadsEnabled(false)
+    layoutViewModel.setPreset(.detailed)
+    window?.ignoresMouseEvents = true
+    window?.makeFirstResponder(nil)
     waitForDashboardT21AuditReady(deadline: Date().addingTimeInterval(10))
+  }
+
+  private func runPhase21HistoryReadback() {
+    waitForPhase21HistoryReadback(
+      expectedPeriod: .twentyFourHours,
+      results: [],
+      deadline: Date().addingTimeInterval(15)
+    )
+  }
+
+  private func waitForPhase21HistoryReadback(
+    expectedPeriod: MemoryHistoryPeriod,
+    results: [Phase21HistoryReadbackResult],
+    deadline: Date
+  ) {
+    guard Date() < deadline else {
+      writeSmokeResult([
+        "event": "phase21-history-readback",
+        "period": expectedPeriod.rawValue,
+        "reason": "history readback did not finish",
+        "status": "FAIL",
+      ])
+      NSApplication.shared.terminate(nil)
+      return
+    }
+    guard
+      let snapshot = historyViewModel.historySnapshot,
+      snapshot.period == expectedPeriod,
+      !historyViewModel.historyIsLoading
+    else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        self?.waitForPhase21HistoryReadback(
+          expectedPeriod: expectedPeriod,
+          results: results,
+          deadline: deadline
+        )
+      }
+      return
+    }
+
+    let updatedResults = results + [phase21HistoryReadbackResult(snapshot)]
+    let nextPeriod: MemoryHistoryPeriod?
+    switch expectedPeriod {
+    case .twentyFourHours:
+      nextPeriod = .twelveHours
+    case .twelveHours:
+      nextPeriod = .threeDays
+    case .threeDays:
+      nextPeriod = nil
+    }
+    guard let nextPeriod else {
+      finishPhase21HistoryReadback(updatedResults)
+      return
+    }
+    historyViewModel.selectHistoryPeriod(nextPeriod)
+    waitForPhase21HistoryReadback(
+      expectedPeriod: nextPeriod,
+      results: updatedResults,
+      deadline: Date().addingTimeInterval(15)
+    )
+  }
+
+  private func phase21HistoryReadbackResult(
+    _ snapshot: MemoryHistorySnapshot
+  ) -> Phase21HistoryReadbackResult {
+    let expectedSource: MemoryHistoryPointSource =
+      snapshot.period == .threeDays ? .oneMinute : .raw
+    let selections = representativeDashboardReadbackSelections(snapshot)
+      .filter {
+        $0.memory?.source == expectedSource
+          && $0.totalCPU?.source == expectedSource
+          && Set($0.logicalCPUs.map(\.source)) == [expectedSource]
+      }
+    let logicalCPUCount = Set(
+      snapshot.cpuHistory.logicalPoints.map(\.cpuIndex)
+    ).count
+    let samplingGapCount =
+      ((try? database?.fetchSamplingGaps()) ?? [])
+      .filter {
+        $0.timestampUTC >= snapshot.startUTC
+          && $0.timestampUTC <= snapshot.endUTC
+      }.count
+    let unknownPressureIntervalCount = snapshot.pressureIntervals.filter {
+      $0.level == .unknown
+    }.count
+    let sourcesMatch =
+      Set(snapshot.points.map(\.source)) == [expectedSource]
+      && Set(snapshot.cpuHistory.totalPoints.map(\.source)) == [expectedSource]
+      && Set(snapshot.cpuHistory.logicalPoints.map(\.source)) == [expectedSource]
+    let valid =
+      !snapshot.points.isEmpty
+      && !snapshot.cpuHistory.totalPoints.isEmpty
+      && !snapshot.cpuHistory.logicalPoints.isEmpty
+      && logicalCPUCount > 0
+      && selections.count == 3
+      && sourcesMatch
+    return Phase21HistoryReadbackResult(
+      period: snapshot.period,
+      expectedSource: expectedSource,
+      memoryPointCount: snapshot.points.count,
+      totalCPUPointCount: snapshot.cpuHistory.totalPoints.count,
+      logicalCPUPointCount: snapshot.cpuHistory.logicalPoints.count,
+      logicalCPUCount: logicalCPUCount,
+      matchedSelectionCount: selections.count,
+      sleepIntervalCount: snapshot.sleepIntervals.count,
+      unknownPressureIntervalCount: unknownPressureIntervalCount,
+      samplingGapCount: samplingGapCount,
+      isValid: valid
+    )
+  }
+
+  private func finishPhase21HistoryReadback(
+    _ results: [Phase21HistoryReadbackResult]
+  ) {
+    guard
+      let database,
+      let window,
+      let container = window.contentView as? DashboardContainerView
+    else {
+      writeSmokeResult([
+        "event": "phase21-history-readback",
+        "reason": "dashboard dependencies unavailable",
+        "status": "FAIL",
+      ])
+      NSApplication.shared.terminate(nil)
+      return
+    }
+
+    var presetReadbacks: [[String: Any]] = []
+    var presetsPassed = true
+    for preset in DashboardLayoutPreset.allCases {
+      layoutViewModel.setPreset(preset)
+      window.contentView?.layoutSubtreeIfNeeded()
+      let expectedHeight = DashboardLayoutPolicy.currentPaneHeight(
+        forAvailableHeight: Double(window.contentLayoutRect.height),
+        preset: preset
+      )
+      let stored = layoutStore.load()
+      let reopened = DashboardLayoutViewModel(store: layoutStore).configuration
+      let passed =
+        layoutViewModel.configuration.preset == preset
+        && stored == layoutViewModel.configuration
+        && reopened == layoutViewModel.configuration
+        && abs(Double(container.lastCurrentPaneHeight) - expectedHeight) < 1
+      presetsPassed = presetsPassed && passed
+      presetReadbacks.append([
+        "current_pane_height": container.lastCurrentPaneHeight,
+        "expected_current_pane_height": expectedHeight,
+        "preset": preset.rawValue,
+        "status": passed ? "PASS" : "FAIL",
+      ])
+    }
+
+    layoutViewModel.reset()
+    window.contentView?.layoutSubtreeIfNeeded()
+    let resetPassed =
+      layoutViewModel.configuration == .defaultConfiguration
+      && layoutStore.load() == .defaultConfiguration
+      && DashboardLayoutViewModel(store: layoutStore).configuration
+        == .defaultConfiguration
+    let hasRequiredPeriods =
+      Set(results.map(\.period))
+      == Set(MemoryHistoryPeriod.allCases)
+    let threeDayResult = results.first { $0.period == .threeDays }
+    let integrity = (try? database.integrityCheck()) ?? "unavailable"
+    let status =
+      results.allSatisfy(\.isValid)
+        && hasRequiredPeriods
+        && threeDayResult.map { $0.sleepIntervalCount > 0 } == true
+        && threeDayResult.map { $0.unknownPressureIntervalCount > 0 } == true
+        && threeDayResult.map { $0.samplingGapCount > 0 } == true
+        && presetsPassed
+        && resetPassed
+        && integrity == "ok"
+        && window.isVisible
+      ? "PASS"
+      : "FAIL"
+    writeSmokeResult([
+      "event": "phase21-history-readback",
+      "integrity_check": integrity,
+      "period_readbacks": results.map(\.jsonValue),
+      "preset_readbacks": presetReadbacks,
+      "settings_reset": resetPassed,
+      "status": status,
+      "window_visible": window.isVisible,
+    ])
+    NSApplication.shared.terminate(nil)
   }
 
   private func waitForDashboardT21AuditReady(deadline: Date) {
@@ -1195,7 +1438,9 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       }
       return
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + DashboardFinalAuditPolicy.warmUpSeconds
+    ) { [weak self] in
       self?.beginDashboardT21VisiblePhase()
     }
   }
@@ -1212,10 +1457,14 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     context: DashboardT21AuditContext,
     minute: Int
   ) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 5 * 60) { [weak self] in
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + DashboardFinalAuditPolicy.checkpointIntervalSeconds
+    ) { [weak self] in
       guard let self else { return }
       self.writeDashboardT21Checkpoint(context: context, minute: minute)
-      if minute < 15 {
+      if TimeInterval(minute * 60)
+        < DashboardFinalAuditPolicy.phaseDurationSeconds
+      {
         self.scheduleDashboardT21Checkpoint(
           context: context,
           minute: minute + 5
@@ -1289,6 +1538,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     hiddenContext: DashboardT21AuditContext
   ) {
     guard let database, let window else { return }
+    let finishedAt = Date()
     let finishedUptime = ProcessInfo.processInfo.systemUptime
     let elapsedUptime = finishedUptime - hiddenContext.startedUptime
     let finalProcessCPUSeconds = processCPUSeconds()
@@ -1303,8 +1553,6 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     let finalTotalCPUSampleCount =
       (try? database.totalCPUSampleCount()) ?? -1
     let finalHistoryLoadCount = historyViewModel.historyLoadRequestCount
-    let finalLogicalCPUGapCount =
-      (try? database.logicalCPUSamplingGapCount()) ?? -1
     let historyLoadDelta =
       finalHistoryLoadCount >= hiddenContext.initialHistoryLoadCount
       ? finalHistoryLoadCount - hiddenContext.initialHistoryLoadCount
@@ -1313,29 +1561,50 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       monitoringFailureCount >= hiddenContext.initialMonitoringFailureCount
       ? monitoringFailureCount - hiddenContext.initialMonitoringFailureCount
       : UInt64.max
-    let totalCPUSampleDelta =
-      finalTotalCPUSampleCount - hiddenContext.initialTotalCPUSampleCount
-    let allMemoryGaps = (try? database.fetchSamplingGaps()) ?? []
+    let phaseMemorySampleCount = dashboardT21MemorySampleCount(
+      since: hiddenContext.startedAt,
+      through: finishedAt,
+      database: database
+    )
+    let phaseTotalCPUSampleCount =
+      (try? database.totalCPUSampleCount(
+        from: hiddenContext.startedAt,
+        through: finishedAt
+      )) ?? -1
+    let phaseMemoryGaps = dashboardT21MemoryGaps(
+      since: hiddenContext.startedAt,
+      through: finishedAt,
+      database: database
+    )
+    let phaseLogicalCPUGapCount =
+      (try? database.logicalCPUSamplingGapCount(
+        from: hiddenContext.startedAt,
+        through: finishedAt
+      )) ?? -1
     let memoryGapAudit = DashboardMemoryGapAuditEvaluator.evaluate(
-      allGaps: allMemoryGaps,
-      initialGapCount: hiddenContext.initialMemoryGapCount,
+      allGaps: phaseMemoryGaps,
+      initialGapCount: 0,
       initialMonitoringFailureCount:
         hiddenContext.initialMonitoringFailureCount,
       finalMonitoringFailureCount: monitoringFailureCount
     )
     let memorySlotDelta =
       DashboardMemoryGapAuditEvaluator.observedSlotCount(
-        sampleDelta: finalSampleCount - hiddenContext.initialSampleCount,
+        sampleDelta: phaseMemorySampleCount,
         explicitGapCount: memoryGapAudit.explicitGapCount
       )
     let status =
-      elapsedUptime >= 15 * 60 - 1
+      elapsedUptime >= DashboardFinalAuditPolicy.phaseDurationSeconds - 1
         && averageCPUPercent.map { $0 < 1 } == true
-        && memorySlotDelta.map { $0 >= 170 } == true
-        && totalCPUSampleDelta >= 170
+        && memorySlotDelta.map {
+          $0 >= DashboardFinalAuditPolicy.minimumRecordedSlots
+        } == true
+        && phaseTotalCPUSampleCount
+          >= DashboardFinalAuditPolicy.minimumRecordedSlots
         && historyLoadDelta == 0
         && memoryGapAudit.isValid
-        && finalLogicalCPUGapCount == hiddenContext.initialLogicalCPUGapCount
+        && phaseLogicalCPUGapCount == 0
+        && monitoringFailureDelta == 0
         && (try? database.integrityCheck()) == "ok"
         && !window.isVisible
       ? "PASS"
@@ -1347,7 +1616,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       "history_reload_reason_counts":
         historyViewModel.historyReloadReasonCountsForAudit,
       "logical_cpu_gap_delta":
-        finalLogicalCPUGapCount - hiddenContext.initialLogicalCPUGapCount,
+        phaseLogicalCPUGapCount,
       "memory_gap_delta": memoryGapAudit.explicitGapCount,
       "memory_gap_diagnostics_status":
         memoryGapAudit.isValid ? "PASS" : "FAIL",
@@ -1357,11 +1626,15 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       "monitoring_failure_delta": monitoringFailureDelta,
       "process_id": ProcessInfo.processInfo.processIdentifier,
       "process_cpu_seconds_delta": processCPUSecondsDelta ?? NSNull(),
-      "sample_delta": finalSampleCount - hiddenContext.initialSampleCount,
+      "retained_sample_count_delta":
+        finalSampleCount - hiddenContext.initialSampleCount,
+      "retained_total_cpu_sample_count_delta":
+        finalTotalCPUSampleCount - hiddenContext.initialTotalCPUSampleCount,
+      "sample_delta": phaseMemorySampleCount,
       "status": status,
       "system_uptime": finishedUptime,
       "system_uptime_delta": elapsedUptime,
-      "total_cpu_sample_delta": totalCPUSampleDelta,
+      "total_cpu_sample_delta": phaseTotalCPUSampleCount,
       "window_interaction_block_delta":
         dashboardT21InteractionBlockCount
         - hiddenContext.initialInteractionBlockCount,
@@ -1394,6 +1667,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     minute: Int
   ) {
     guard let database, let window else { return }
+    let observedAt = Date()
     writeSmokeResult([
       "event": "t21-\(context.phase)-\(minute)",
       "history_load_count": historyViewModel.historyLoadRequestCount,
@@ -1403,6 +1677,16 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       "monitoring_failure_count": monitoringFailureCount,
       "process_id": ProcessInfo.processInfo.processIdentifier,
       "process_cpu_seconds": processCPUSeconds() ?? NSNull(),
+      "phase_sample_count": dashboardT21MemorySampleCount(
+        since: context.startedAt,
+        through: observedAt,
+        database: database
+      ),
+      "phase_total_cpu_sample_count":
+        (try? database.totalCPUSampleCount(
+          from: context.startedAt,
+          through: observedAt
+        )) ?? -1,
       "sample_count": (try? database.sampleCount()) ?? -1,
       "system_uptime": ProcessInfo.processInfo.systemUptime,
       "total_cpu_sample_count":
@@ -1416,6 +1700,7 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
     context: DashboardT21AuditContext
   ) {
     guard let database, let window else { return }
+    let finishedAt = Date()
     let finishedUptime = ProcessInfo.processInfo.systemUptime
     let elapsedUptime = finishedUptime - context.startedUptime
     let finalProcessCPUSeconds = processCPUSeconds()
@@ -1431,15 +1716,27 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       finalHistoryLoadCount >= context.initialHistoryLoadCount
       ? finalHistoryLoadCount - context.initialHistoryLoadCount
       : UInt64.max
-    let sampleDelta =
-      ((try? database.sampleCount()) ?? -1) - context.initialSampleCount
+    let finalSampleCount = (try? database.sampleCount()) ?? -1
+    let finalTotalCPUSampleCount =
+      (try? database.totalCPUSampleCount()) ?? -1
+    let sampleDelta = dashboardT21MemorySampleCount(
+      since: context.startedAt,
+      through: finishedAt,
+      database: database
+    )
     let totalCPUSampleDelta =
-      ((try? database.totalCPUSampleCount()) ?? -1)
-      - context.initialTotalCPUSampleCount
-    let allMemoryGaps = (try? database.fetchSamplingGaps()) ?? []
+      (try? database.totalCPUSampleCount(
+        from: context.startedAt,
+        through: finishedAt
+      )) ?? -1
+    let phaseMemoryGaps = dashboardT21MemoryGaps(
+      since: context.startedAt,
+      through: finishedAt,
+      database: database
+    )
     let memoryGapAudit = DashboardMemoryGapAuditEvaluator.evaluate(
-      allGaps: allMemoryGaps,
-      initialGapCount: context.initialMemoryGapCount,
+      allGaps: phaseMemoryGaps,
+      initialGapCount: 0,
       initialMonitoringFailureCount: context.initialMonitoringFailureCount,
       finalMonitoringFailureCount: monitoringFailureCount
     )
@@ -1448,21 +1745,30 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         sampleDelta: sampleDelta,
         explicitGapCount: memoryGapAudit.explicitGapCount
       )
+    let finalLogicalCPUGapCount =
+      (try? database.logicalCPUSamplingGapCount()) ?? -1
     let logicalCPUGapDelta =
-      ((try? database.logicalCPUSamplingGapCount()) ?? -1)
-      - context.initialLogicalCPUGapCount
+      (try? database.logicalCPUSamplingGapCount(
+        from: context.startedAt,
+        through: finishedAt
+      )) ?? -1
     let monitoringFailureDelta =
       monitoringFailureCount >= context.initialMonitoringFailureCount
       ? monitoringFailureCount - context.initialMonitoringFailureCount
       : UInt64.max
     let status =
-      elapsedUptime >= 15 * 60 - 1
+      elapsedUptime >= DashboardFinalAuditPolicy.phaseDurationSeconds - 1
         && averageCPUPercent.map { $0 < 1 } == true
-        && memorySlotDelta.map { $0 >= 170 } == true
-        && totalCPUSampleDelta >= 170
-        && historyLoadDelta == 3
+        && memorySlotDelta.map {
+          $0 >= DashboardFinalAuditPolicy.minimumRecordedSlots
+        } == true
+        && totalCPUSampleDelta
+          >= DashboardFinalAuditPolicy.minimumRecordedSlots
+        && historyLoadDelta
+          == DashboardFinalAuditPolicy.expectedVisibleHistoryReloads
         && memoryGapAudit.isValid
         && logicalCPUGapDelta == 0
+        && monitoringFailureDelta == 0
         && !window.isVisible
       ? "PASS"
       : "FAIL"
@@ -1482,6 +1788,12 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
       "monitoring_failure_delta": monitoringFailureDelta,
       "process_id": ProcessInfo.processInfo.processIdentifier,
       "process_cpu_seconds_delta": processCPUSecondsDelta ?? NSNull(),
+      "retained_logical_cpu_gap_count_delta":
+        finalLogicalCPUGapCount - context.initialLogicalCPUGapCount,
+      "retained_sample_count_delta":
+        finalSampleCount - context.initialSampleCount,
+      "retained_total_cpu_sample_count_delta":
+        finalTotalCPUSampleCount - context.initialTotalCPUSampleCount,
       "sample_delta": sampleDelta,
       "status": status,
       "system_uptime": finishedUptime,
@@ -1492,6 +1804,24 @@ private final class MemoryWatcherApplicationCoordinator: NSObject,
         - context.initialInteractionBlockCount,
       "window_visible": window.isVisible,
     ])
+  }
+
+  private func dashboardT21MemorySampleCount(
+    since startUTC: Date,
+    through endUTC: Date,
+    database: MemoryWatcherDatabase
+  ) -> Int {
+    (try? database.sampleCount(from: startUTC, through: endUTC)) ?? -1
+  }
+
+  private func dashboardT21MemoryGaps(
+    since startUTC: Date,
+    through endUTC: Date,
+    database: MemoryWatcherDatabase
+  ) -> [MemorySamplingGap] {
+    ((try? database.fetchSamplingGaps()) ?? []).filter {
+      $0.timestampUTC >= startUTC && $0.timestampUTC <= endUTC
+    }
   }
 
   private func processCPUSeconds() -> TimeInterval? {

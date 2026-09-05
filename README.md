@@ -1,6 +1,6 @@
 # Memory Watcher
 
-Memory Watcherは、macOS全体のメモリ状態を継続的に記録し、あとから
+Memory Watcherは、macOS全体のメモリとCPUを継続的に記録し、あとから
 12時間・24時間・3日の履歴を見返せる軽量なメニューバーアプリです。
 
 本プロジェクトは、Codexによるノンコード開発のアプリです。利用者が
@@ -98,6 +98,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 完了: 工程18「表示構成要件と設定契約」
 - 完了: 工程19「適応レイアウトとプリセット表示」
 - 完了: 工程20「アプリ内表示構成エディタ」
+- 完了: 工程21「回帰監査・アプリ化」
+- v0.3完成
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
@@ -108,11 +110,14 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 工程14検証記録: [Mac全体CPU保存](docs/Phase_14_Verification.md)
 - 工程15検証記録: [論理CPU別保存](docs/Phase_15_Verification.md)
 - 工程16検証記録: [CPU履歴グラフ](docs/Phase_16_Verification.md)
+- 工程17検証記録: [統合版の最終監査](docs/Phase_17_Verification.md)
 - v0.2計画: [CPU・統合画面工程表](docs/Memory_Watcher_v0.2_CPU_and_Unified_Dashboard_Plan.md)
 - v0.3計画: [ローカル表示構成工程表](docs/Memory_Watcher_v0.3_Layout_Configuration_Plan.md)
 - 表示設定契約: [Dashboard Layout Contract v1](docs/Dashboard_Layout_Contract_v1.md)
+- 工程18検証記録: [表示構成要件と設定契約](docs/Phase_18_Verification.md)
 - 工程19検証記録: [適応レイアウトとプリセット表示](docs/Phase_19_Verification.md)
 - 工程20検証記録: [アプリ内表示構成エディタ](docs/Phase_20_Verification.md)
+- 工程21検証記録: [回帰監査・アプリ化](docs/Phase_21_Verification.md)
 
 ## 開発
 

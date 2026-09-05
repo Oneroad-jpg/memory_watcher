@@ -62,6 +62,20 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
     XCTAssertEqual(try database.fetchSamplingGaps(), gaps)
     XCTAssertEqual(try database.fetchLifecycleEvents(), lifecycleEvents)
     XCTAssertEqual(
+      try database.sampleCount(
+        from: samples[0].timestampUTC,
+        through: samples[0].timestampUTC
+      ),
+      1
+    )
+    XCTAssertEqual(
+      try database.samplingGapCount(
+        from: gaps[0].timestampUTC,
+        through: gaps[0].timestampUTC
+      ),
+      1
+    )
+    XCTAssertEqual(
       try database.latestSampleAnchor(),
       SystemTimelineAnchor(
         timestampUTC: samples[1].timestampUTC,
@@ -98,6 +112,13 @@ final class MemoryWatcherDatabaseTests: XCTestCase {
     try database.insert(totalCPUSamples: samples)
 
     XCTAssertEqual(try database.totalCPUSampleCount(), 2)
+    XCTAssertEqual(
+      try database.totalCPUSampleCount(
+        from: samples[0].intervalEndUTC,
+        through: samples[0].intervalEndUTC
+      ),
+      1
+    )
     XCTAssertEqual(try database.fetchTotalCPUSamples(), samples)
     XCTAssertEqual(try database.integrityCheck(), "ok")
   }

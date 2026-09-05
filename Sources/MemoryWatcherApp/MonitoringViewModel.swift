@@ -191,6 +191,7 @@ final class HistoryViewModel: ObservableObject {
   private var historyLoadTask: Task<Void, Never>?
   private var lastReloadAt: Date?
   private var windowIsVisible = false
+  private var userInitiatedReloadsAreEnabled = true
   private var generationGate = DashboardHistoryGenerationGate()
 
   func configure(
@@ -249,6 +250,9 @@ final class HistoryViewModel: ObservableObject {
     _ period: MemoryHistoryPeriod,
     now: Date = Date()
   ) {
+    guard userInitiatedReloadsAreEnabled else {
+      return
+    }
     guard period != historyPeriod || historySnapshot == nil else {
       return
     }
@@ -261,6 +265,9 @@ final class HistoryViewModel: ObservableObject {
     now: Date = Date(),
     reason: ReloadReason = .manual
   ) {
+    guard reason != .manual || userInitiatedReloadsAreEnabled else {
+      return
+    }
     guard let historyLoader else {
       return
     }
@@ -320,6 +327,10 @@ final class HistoryViewModel: ObservableObject {
         (reason.rawValue, historyReloadReasonCounts[reason, default: 0])
       }
     )
+  }
+
+  func setUserInitiatedReloadsEnabled(_ enabled: Bool) {
+    userInitiatedReloadsAreEnabled = enabled
   }
 
   func selectTimestamp(_ date: Date?) {
