@@ -92,6 +92,10 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 完了: 工程14「Mac全体CPUの保存」
 - 完了: 工程15「論理CPU別の保存」
 - 完了: 工程16「CPU履歴グラフ」
+- 完了: 工程16A「単一ウインドウへの画面統合」
+- 完了: 工程17「統合版の最終監査」
+- v0.2完成
+- 完了: 工程18「表示構成要件と設定契約」
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
@@ -103,6 +107,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 工程15検証記録: [論理CPU別保存](docs/Phase_15_Verification.md)
 - 工程16検証記録: [CPU履歴グラフ](docs/Phase_16_Verification.md)
 - v0.2計画: [CPU・統合画面工程表](docs/Memory_Watcher_v0.2_CPU_and_Unified_Dashboard_Plan.md)
+- v0.3計画: [ローカル表示構成工程表](docs/Memory_Watcher_v0.3_Layout_Configuration_Plan.md)
+- 表示設定契約: [Dashboard Layout Contract v1](docs/Dashboard_Layout_Contract_v1.md)
 
 ## 開発
 
