@@ -201,66 +201,31 @@ struct DashboardSelectionDetailView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
       if let selection {
-        HStack {
-          Text("選択UTC")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-          Text(
-            selection.requestedUTC.formatted(
-              .dateTime.year().month().day().hour().minute().second()
-            )
-          )
-          .font(.subheadline.weight(.semibold))
-          Spacer()
-          Text("Pressure: \(selection.pressure?.rawValue ?? "未測定")")
-            .font(.caption)
-        }
+        selectionHeader(selection)
+        selectionSummaryTable(selection)
 
-        LazyVGrid(
-          columns: [GridItem(.adaptive(minimum: 128), spacing: 12)],
-          alignment: .leading,
-          spacing: 8
+        HStack(
+          alignment: .top,
+          spacing: CGFloat(layoutMetrics.sectionSpacing)
         ) {
-          if let memory = selection.memory {
-            metric(
-              "メモリ（推定）",
-              "\((memory.estimatedMemoryUsedBytes / gigabyte).formatted(.number.precision(.fractionLength(2)))) GB"
-            )
-            metric("メモリ区間", intervalText(memory))
-          } else {
-            metric("メモリ", "この時刻は未測定")
-          }
-
           if let total = selection.totalCPU {
-            metric("CPU全体", percent(total.utilizationPercent))
-            metric("CPU区間", intervalText(total))
-            metric("user", percent(total.userPercent))
-            metric("system", percent(total.systemPercent))
-            metric("nice", percent(total.nicePercent))
-            metric("idle", percent(total.idlePercent))
-          } else {
-            metric("CPU全体", "この時刻は未測定")
+            cpuBreakdownTable(total)
+              .frame(maxWidth: .infinity, alignment: .topLeading)
           }
-        }
 
-        if selection.logicalCPUs.isEmpty {
-          Text("論理CPU: この時刻は未測定")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        } else {
-          LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 92), spacing: 10)],
-            alignment: .leading,
-            spacing: 6
-          ) {
-            ForEach(selection.logicalCPUs, id: \.selectionID) { cpu in
-              metric(cpu.displayName, percent(cpu.utilizationPercent))
-            }
+          if selection.logicalCPUs.isEmpty {
+            Text("論理CPU: この時刻は未測定")
+              .font(.body)
+              .foregroundStyle(.secondary)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          } else {
+            logicalCPUTable(selection.logicalCPUs)
+              .frame(maxWidth: .infinity, alignment: .topLeading)
           }
         }
       } else {
         Text("グラフ上の時刻を選択すると保存値と測定区間を確認できます")
-          .font(.caption)
+          .font(.body)
           .foregroundStyle(.secondary)
       }
     }
@@ -268,13 +233,165 @@ struct DashboardSelectionDetailView: View {
     .accessibilityIdentifier("dashboard-selection-details")
   }
 
-  private func metric(_ label: String, _ value: String) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(label)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-      Text(value)
-        .font(.caption.monospacedDigit())
+  private func selectionHeader(
+    _ selection: DashboardHistorySelection
+  ) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("選択時刻（UTC）")
+          .font(.headline)
+        Text(
+          selection.requestedUTC.formatted(
+            .dateTime.year().month().day().hour().minute().second()
+          )
+        )
+        .font(.title3.weight(.semibold).monospacedDigit())
+      }
+
+      Spacer()
+
+      Text("Pressure: \(selection.pressure?.rawValue ?? "未測定")")
+        .font(.subheadline.weight(.semibold))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.secondary.opacity(0.12), in: Capsule())
+    }
+    .accessibilityIdentifier("selection-detail-header")
+  }
+
+  private func selectionSummaryTable(
+    _ selection: DashboardHistorySelection
+  ) -> some View {
+    let rows: [[String]] = [
+      selection.memory.map {
+        [
+          "メモリ（推定）",
+          "\(($0.estimatedMemoryUsedBytes / gigabyte).formatted(.number.precision(.fractionLength(2)))) GB",
+          intervalText($0),
+        ]
+      } ?? ["メモリ", "この時刻は未測定", "—"],
+      selection.totalCPU.map {
+        ["CPU全体", percent($0.utilizationPercent), intervalText($0)]
+      } ?? ["CPU全体", "この時刻は未測定", "—"],
+    ]
+    return VStack(alignment: .leading, spacing: 5) {
+      Text("選択時刻の保存値")
+        .font(.headline)
+
+      selectionTable(
+        columns: [
+          GridItem(.flexible(minimum: 110), alignment: .leading),
+          GridItem(.flexible(minimum: 80), alignment: .leading),
+          GridItem(.flexible(minimum: 190), alignment: .leading),
+        ],
+        header: ["項目", "値", "測定区間"],
+        rows: rows,
+        labelColumns: [0]
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .selectionTableBackground()
+      .accessibilityIdentifier("selection-summary-table")
+    }
+  }
+
+  private func cpuBreakdownTable(
+    _ total: TotalCPUHistoryPoint
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Text("CPU内訳")
+        .font(.headline)
+      selectionTable(
+        columns: [
+          GridItem(.flexible(minimum: 90), alignment: .leading),
+          GridItem(.flexible(minimum: 90), alignment: .leading),
+        ],
+        header: ["内訳", "使用率"],
+        rows: [
+          ["user", percent(total.userPercent)],
+          ["system", percent(total.systemPercent)],
+          ["nice", percent(total.nicePercent)],
+          ["idle", percent(total.idlePercent)],
+        ],
+        labelColumns: [0]
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .selectionTableBackground()
+      .accessibilityIdentifier("selection-cpu-breakdown-table")
+    }
+  }
+
+  private func logicalCPUTable(
+    _ logicalCPUs: [LogicalCPUHistoryPoint]
+  ) -> some View {
+    let pairs = stride(from: 0, to: logicalCPUs.count, by: 2).map { index in
+      Array(logicalCPUs[index..<min(index + 2, logicalCPUs.count)])
+    }
+    return VStack(alignment: .leading, spacing: 5) {
+      Text("論理CPU別")
+        .font(.headline)
+      selectionTable(
+        columns: [
+          GridItem(.flexible(minimum: 45), alignment: .leading),
+          GridItem(.flexible(minimum: 65), alignment: .leading),
+          GridItem(.flexible(minimum: 45), alignment: .leading),
+          GridItem(.flexible(minimum: 65), alignment: .leading),
+        ],
+        header: ["CPU", "使用率", "CPU", "使用率"],
+        rows: pairs.map { pair in
+          if pair.count == 2 {
+            return [
+              pair[0].displayName,
+              percent(pair[0].utilizationPercent),
+              pair[1].displayName,
+              percent(pair[1].utilizationPercent),
+            ]
+          } else {
+            return [
+              pair[0].displayName,
+              percent(pair[0].utilizationPercent),
+              "—",
+              "—",
+            ]
+          }
+        },
+        labelColumns: [0, 2]
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .selectionTableBackground()
+      .accessibilityIdentifier("selection-logical-cpu-table")
+    }
+  }
+
+  private func selectionTable(
+    columns: [GridItem],
+    header: [String],
+    rows: [[String]],
+    labelColumns: Set<Int>
+  ) -> some View {
+    LazyVGrid(columns: columns, alignment: .leading, spacing: 0) {
+      ForEach(Array(header.enumerated()), id: \.offset) { _, value in
+        Text(value)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 9)
+          .padding(.vertical, 7)
+          .background(Color.primary.opacity(0.055))
+      }
+
+      ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+        ForEach(Array(row.enumerated()), id: \.offset) { index, value in
+          Text(value)
+            .font(
+              labelColumns.contains(index)
+                ? .body.weight(.medium)
+                : .body.monospacedDigit()
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+        }
+      }
     }
   }
 
@@ -304,6 +421,17 @@ extension View {
         RoundedRectangle(cornerRadius: 12)
           .stroke(Color.secondary.opacity(0.16))
       )
+  }
+
+  fileprivate func selectionTableBackground() -> some View {
+    self.background(
+      RoundedRectangle(cornerRadius: 8)
+        .fill(Color.primary.opacity(0.025))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 8)
+        .stroke(Color.secondary.opacity(0.14))
+    )
   }
 }
 
