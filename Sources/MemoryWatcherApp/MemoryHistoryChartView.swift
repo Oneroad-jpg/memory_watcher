@@ -104,12 +104,13 @@ struct MemoryHistoryChartView: View {
               LogicalCPUHistoryPanel(
                 snapshot: snapshot,
                 selectedUTC: selection,
-                layoutMetrics: metrics
+                layoutMetrics: metrics,
+                usesTwoColumnOverview: true
               )
               .frame(
-                minWidth: metrics.logicalCPUHistoryMinimumWidth,
-                idealWidth: metrics.logicalCPUHistoryMinimumWidth + 40,
-                maxWidth: metrics.logicalCPUHistoryMinimumWidth + 100
+                minWidth: metrics.logicalCPUHistoryTwoColumnMinimumWidth,
+                idealWidth: metrics.logicalCPUHistoryTwoColumnMinimumWidth + 20,
+                maxWidth: metrics.logicalCPUHistoryTwoColumnMinimumWidth + 60
               )
             }
 
@@ -205,7 +206,8 @@ struct MemoryHistoryChartView: View {
       LogicalCPUHistoryPanel(
         snapshot: snapshot,
         selectedUTC: selection,
-        layoutMetrics: metrics
+        layoutMetrics: metrics,
+        usesTwoColumnOverview: false
       )
     case .selectionDetails:
       DashboardSelectionDetailView(

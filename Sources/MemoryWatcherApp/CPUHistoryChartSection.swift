@@ -88,6 +88,7 @@ struct LogicalCPUHistoryPanel: View {
   let snapshot: DashboardHistoryRenderSnapshot
   @Binding var selectedUTC: Date?
   let layoutMetrics: DashboardLayoutMetrics
+  let usesTwoColumnOverview: Bool
 
   var body: some View {
     let chartSeries = series
@@ -108,14 +109,7 @@ struct LogicalCPUHistoryPanel: View {
           .frame(maxWidth: .infinity, minHeight: 100)
       } else {
         LazyVGrid(
-          columns: [
-            GridItem(
-              .adaptive(
-                minimum: layoutMetrics.logicalCPUHistoryMinimumWidth
-              ),
-              spacing: layoutMetrics.sectionSpacing
-            )
-          ],
+          columns: gridColumns,
           alignment: .leading,
           spacing: layoutMetrics.sectionSpacing
         ) {
@@ -131,6 +125,25 @@ struct LogicalCPUHistoryPanel: View {
     }
     .dashboardPanel(padding: layoutMetrics.contentPadding * 0.65)
     .accessibilityIdentifier("logical-cpu-history-grid")
+    .accessibilityValue(usesTwoColumnOverview ? "2列" : "自動列")
+  }
+
+  private var gridColumns: [GridItem] {
+    if usesTwoColumnOverview {
+      return Array(
+        repeating: GridItem(
+          .flexible(minimum: layoutMetrics.logicalCPUHistoryMinimumWidth),
+          spacing: layoutMetrics.sectionSpacing
+        ),
+        count: 2
+      )
+    }
+    return [
+      GridItem(
+        .adaptive(minimum: layoutMetrics.logicalCPUHistoryMinimumWidth),
+        spacing: layoutMetrics.sectionSpacing
+      )
+    ]
   }
 
   private func logicalChart(

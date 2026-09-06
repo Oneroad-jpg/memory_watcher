@@ -9,9 +9,9 @@ public enum DashboardLayoutPreset: String, CaseIterable, Codable, Sendable {
     switch self {
     case .compact:
       return DashboardLayoutMetrics(
-        currentPaneMinimumHeight: 170,
-        currentPaneMaximumHeight: 260,
-        currentPaneHeightFraction: 0.34,
+        currentPaneMinimumHeight: 120,
+        currentPaneMaximumHeight: 135,
+        currentPaneHeightFraction: 0.14,
         contentPadding: 12,
         sectionSpacing: 8,
         logicalCPUCurrentMinimumWidth: 88,
@@ -23,9 +23,9 @@ public enum DashboardLayoutPreset: String, CaseIterable, Codable, Sendable {
       )
     case .balanced:
       return DashboardLayoutMetrics(
-        currentPaneMinimumHeight: 200,
-        currentPaneMaximumHeight: 320,
-        currentPaneHeightFraction: 0.42,
+        currentPaneMinimumHeight: 135,
+        currentPaneMaximumHeight: 150,
+        currentPaneHeightFraction: 0.16,
         contentPadding: 18,
         sectionSpacing: 10,
         logicalCPUCurrentMinimumWidth: 100,
@@ -37,9 +37,9 @@ public enum DashboardLayoutPreset: String, CaseIterable, Codable, Sendable {
       )
     case .detailed:
       return DashboardLayoutMetrics(
-        currentPaneMinimumHeight: 220,
-        currentPaneMaximumHeight: 380,
-        currentPaneHeightFraction: 0.48,
+        currentPaneMinimumHeight: 150,
+        currentPaneMaximumHeight: 170,
+        currentPaneHeightFraction: 0.18,
         contentPadding: 24,
         sectionSpacing: 12,
         logicalCPUCurrentMinimumWidth: 112,
@@ -65,6 +65,14 @@ public struct DashboardLayoutMetrics: Equatable, Sendable {
   public let swapChartHeight: Double
   public let totalCPUChartHeight: Double
   public let logicalCPUChartHeight: Double
+
+  public var logicalCPUHistoryTwoColumnMinimumWidth: Double {
+    let panelHorizontalPadding = contentPadding * 0.65 * 2
+    return logicalCPUHistoryMinimumWidth * 2
+      + sectionSpacing
+      + panelHorizontalPadding
+      + 1
+  }
 
   public init(
     currentPaneMinimumHeight: Double,

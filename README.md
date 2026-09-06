@@ -3,6 +3,9 @@
 Memory Watcherは、macOS全体のメモリとCPUを継続的に記録し、あとから
 12時間・24時間・3日の履歴を見返せる軽量なメニューバーアプリです。
 
+現在の公開版v0.3.1では、標準ウインドウの上部余白を縮め、8論理CPUの履歴を
+2列4行で一覧表示できます。
+
 本プロジェクトは、Codexによるノンコード開発のアプリです。利用者が
 コードを直接記述せず、Codexとの対話で要件定義・実装・検証を進めます。
 生成物はSwiftとSwiftUIで実装するネイティブmacOSアプリです。
@@ -100,6 +103,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 完了: 工程20「アプリ内表示構成エディタ」
 - 完了: 工程21「回帰監査・アプリ化」
 - v0.3完成
+- 完了: 工程22「上部余白削減・CPU一覧」
+- v0.3.1完成
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
@@ -118,6 +123,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 工程19検証記録: [適応レイアウトとプリセット表示](docs/Phase_19_Verification.md)
 - 工程20検証記録: [アプリ内表示構成エディタ](docs/Phase_20_Verification.md)
 - 工程21検証記録: [回帰監査・アプリ化](docs/Phase_21_Verification.md)
+- v0.3.1計画: [上部余白削減・CPU一覧工程表](docs/Memory_Watcher_v0.3.1_Compact_CPU_Overview_Plan.md)
+- 工程22検証記録: [上部余白削減・CPU一覧](docs/Phase_22_Verification.md)
 
 ## 開発
 
