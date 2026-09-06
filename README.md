@@ -105,6 +105,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - v0.3完成
 - 完了: 工程22「上部余白削減・CPU一覧」
 - v0.3.1完成
+- 完了: 工程23「選択時刻詳細の表形式化」
+- v0.3.2完成
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
@@ -125,6 +127,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 工程21検証記録: [回帰監査・アプリ化](docs/Phase_21_Verification.md)
 - v0.3.1計画: [上部余白削減・CPU一覧工程表](docs/Memory_Watcher_v0.3.1_Compact_CPU_Overview_Plan.md)
 - 工程22検証記録: [上部余白削減・CPU一覧](docs/Phase_22_Verification.md)
+- v0.3.2計画: [選択時刻詳細表 工程表](docs/Memory_Watcher_v0.3.2_Selection_Detail_Table_Plan.md)
+- 工程23検証記録: [選択時刻詳細の表形式化](docs/Phase_23_Verification.md)
 
 ## 開発
 

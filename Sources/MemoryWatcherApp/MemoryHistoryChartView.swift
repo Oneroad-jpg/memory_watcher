@@ -90,7 +90,24 @@ struct MemoryHistoryChartView: View {
     let configuration = layoutConfiguration.resolved()
     let selection = Binding<Date?>(
       get: { viewModel.selectedUTC },
-      set: { viewModel.selectTimestamp($0) }
+      set: { requestedUTC in
+        guard let requestedUTC else {
+          return
+        }
+        if let snapshot = viewModel.historySnapshot {
+          let requestedSelection = DashboardHistorySelectionResolver.resolve(
+            snapshot: snapshot,
+            at: requestedUTC
+          )
+          guard
+            requestedSelection.memory != nil,
+            requestedSelection.totalCPU != nil
+          else {
+            return
+          }
+        }
+        viewModel.selectTimestamp(requestedUTC)
+      }
     )
 
     VStack(
