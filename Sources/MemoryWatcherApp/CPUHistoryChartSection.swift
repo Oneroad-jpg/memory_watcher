@@ -193,6 +193,14 @@ struct LogicalCPUHistoryPanel: View {
   }
 }
 
+private struct DashboardSelectionTableCell: Identifiable {
+  let row: Int
+  let column: Int
+  let value: String
+
+  var id: String { "\(row)-\(column)" }
+}
+
 struct DashboardSelectionDetailView: View {
   let selection: DashboardHistorySelection?
   let layoutMetrics: DashboardLayoutMetrics
@@ -368,7 +376,16 @@ struct DashboardSelectionDetailView: View {
     rows: [[String]],
     labelColumns: Set<Int>
   ) -> some View {
-    LazyVGrid(columns: columns, alignment: .leading, spacing: 0) {
+    let cells = rows.enumerated().flatMap { rowIndex, row in
+      row.enumerated().map { columnIndex, value in
+        DashboardSelectionTableCell(
+          row: rowIndex,
+          column: columnIndex,
+          value: value
+        )
+      }
+    }
+    return LazyVGrid(columns: columns, alignment: .leading, spacing: 0) {
       ForEach(Array(header.enumerated()), id: \.offset) { _, value in
         Text(value)
           .font(.subheadline.weight(.semibold))
@@ -379,18 +396,16 @@ struct DashboardSelectionDetailView: View {
           .background(Color.primary.opacity(0.055))
       }
 
-      ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-        ForEach(Array(row.enumerated()), id: \.offset) { index, value in
-          Text(value)
-            .font(
-              labelColumns.contains(index)
-                ? .body.weight(.medium)
-                : .body.monospacedDigit()
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-        }
+      ForEach(cells) { cell in
+        Text(cell.value)
+          .font(
+            labelColumns.contains(cell.column)
+              ? .body.weight(.medium)
+              : .body.monospacedDigit()
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 9)
+          .padding(.vertical, 6)
       }
     }
   }
