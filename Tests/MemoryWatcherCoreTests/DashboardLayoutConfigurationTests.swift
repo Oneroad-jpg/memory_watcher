@@ -33,6 +33,10 @@ final class DashboardLayoutConfigurationTests: XCTestCase {
       XCTAssertGreaterThan(metrics.sectionSpacing, 0)
       XCTAssertGreaterThan(metrics.logicalCPUCurrentMinimumWidth, 0)
       XCTAssertGreaterThan(metrics.logicalCPUHistoryMinimumWidth, 0)
+      XCTAssertGreaterThan(
+        metrics.logicalCPUHistoryTwoColumnMinimumWidth,
+        metrics.logicalCPUHistoryMinimumWidth * 2
+      )
       XCTAssertGreaterThan(metrics.memoryChartHeight, 0)
       XCTAssertGreaterThan(metrics.swapChartHeight, 0)
       XCTAssertGreaterThan(metrics.totalCPUChartHeight, 0)
@@ -147,21 +151,40 @@ final class DashboardLayoutConfigurationTests: XCTestCase {
         forAvailableHeight: 400,
         preset: .compact
       ),
-      170
+      120
     )
     XCTAssertEqual(
       DashboardLayoutPolicy.currentPaneHeight(
         forAvailableHeight: 600,
         preset: .balanced
       ),
-      252
+      135
     )
     XCTAssertEqual(
       DashboardLayoutPolicy.currentPaneHeight(
         forAvailableHeight: 1_200,
         preset: .detailed
       ),
-      380
+      170
+    )
+  }
+
+  func testDefaultLayoutFitsTwoLogicalCPUHistoryColumnsAtStandardWidth() {
+    let metrics = DashboardLayoutPreset.balanced.metrics
+    let outerHorizontalInsets =
+      metrics.contentPadding * 2
+      + metrics.contentPadding * 0.75 * 2
+    let requiredWidth =
+      outerHorizontalInsets
+      + metrics.logicalCPUHistoryTwoColumnMinimumWidth
+      + metrics.sectionSpacing
+      + 500
+
+    XCTAssertLessThanOrEqual(requiredWidth, 1_080)
+    XCTAssertEqual(
+      metrics.logicalCPUHistoryTwoColumnMinimumWidth,
+      454.4,
+      accuracy: 0.001
     )
   }
 }
