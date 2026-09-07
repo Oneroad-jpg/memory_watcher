@@ -63,8 +63,9 @@ shasum -a 256 MemoryWatcher-0.3.3.zip
 測定履歴はMac内のSQLiteにだけ保存します。外向き通信、通知、クラウド同期、
 プロセス別・アプリ別解析、GPU記録、AI診断、自動更新は行いません。
 
-詳細は[README](../README.md)と
-[工程24署名・公証検証](Phase_24_Verification.md)を参照してください。
+詳細は[README](https://github.com/Oneroad-jpg/memory_watcher#readme)と
+[工程24署名・公証検証](https://github.com/Oneroad-jpg/memory_watcher/blob/main/docs/Phase_24_Verification.md)
+を参照してください。
 
 ## ライセンス
 
