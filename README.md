@@ -237,6 +237,14 @@ Apple Account、アプリ用パスワード、APIキー、公証ログ、submiss
 | v0.3.2 | 選択時刻詳細の表形式化 |
 | v0.3.3 | Developer ID署名、Apple公証、安全な更新経路 |
 
+### 次の独立工程
+
+v0.3.4では、標準画面で縦スクロールせずに、メモリ、スワップ、Pressure、
+Mac全体CPU、全論理CPUの動きを見渡せるダッシュボードを計画しています。
+現在は**工程表作成済み・実装未着手**です。
+
+- [v0.3.4 スクロール不要ダッシュボード工程表](docs/Memory_Watcher_v0.3.4_No_Scroll_Dashboard_Plan.md)
+
 実装前に対象と対象外を固定し、各工程に観測可能な完了条件を置いています。
 実測、SQLite読戻し、OS標準表示との照合、回帰試験を分離し、説明不能な差や
 incidentがあればその工程で停止します。
@@ -249,6 +257,7 @@ incidentがあればその工程で停止します。
 - [CPU指標定義](docs/CPU_Metric_Definitions_v1.md)
 - [v0.2 CPU・統合画面工程表](docs/Memory_Watcher_v0.2_CPU_and_Unified_Dashboard_Plan.md)
 - [表示設定契約](docs/Dashboard_Layout_Contract_v1.md)
+- [v0.3.4 スクロール不要ダッシュボード工程表](docs/Memory_Watcher_v0.3.4_No_Scroll_Dashboard_Plan.md)
 - [v0.3.3署名・公証工程表](docs/Memory_Watcher_v0.3.3_Developer_ID_Notarization_Plan.md)
 - [工程24署名・公証検証](docs/Phase_24_Verification.md)
 
