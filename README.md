@@ -7,9 +7,9 @@ Memory Watcherは、Mac全体のメモリとCPUを5秒ごとに記録し、あ�
 最新ソースはv0.3.3です。v0.3.3の配布アプリはDeveloper IDで署名され、
 Appleの公証とGatekeeper評価を通過しています。
 
-> **現在の公開状態:** GitHubから取得できる最新Releaseはv0.3.2です。
-> これは未公証版で、新規導入には推奨しません。署名・公証・実機確認済みの
-> v0.3.3 ZIPは公開準備済みですが、GitHub Releaseにはまだ公開されていません。
+> **最新Release:** [Memory Watcher v0.3.3](https://github.com/Oneroad-jpg/memory_watcher/releases/tag/v0.3.3)
+> を公開しています。配布ZIPはDeveloper ID署名、Apple公証、Gatekeeper評価、
+> 公開後の再ダウンロード検証を通過しています。
 
 Office OneRoadが目的、対象範囲、対象外、工程、完了条件、実機での評価を定め、
 Codexがコード生成、テスト、Git操作を担当しました。開発管理と検証根拠は
@@ -36,12 +36,12 @@ Codexがコード生成、テスト、Git操作を担当しました。開発管
 
 公開された配布物は
 [GitHub Releases](https://github.com/Oneroad-jpg/memory_watcher/releases)
-で確認できます。現在取得できるのは未公証のv0.3.2だけです。署名・公証済みの
-v0.3.3はまだReleaseとして公開されていないため、現時点では新規利用者へ推奨する
-公開バイナリはありません。v0.3.3の公開前に試す場合は、ソースからビルドして
-ください。
+で確認できます。新規導入には、署名・公証済みの
+[MemoryWatcher-0.3.3.zip](https://github.com/Oneroad-jpg/memory_watcher/releases/download/v0.3.3/MemoryWatcher-0.3.3.zip)
+を使用してください。v0.3.2は未公証の旧版として残していますが、新規導入には
+推奨しません。
 
-v0.3.3 Releaseが公開された後は、次の手順で導入できます。
+次の手順で導入できます。
 
 1. Releaseから `MemoryWatcher-<version>.zip` をダウンロードする
 2. ZIPを展開する
@@ -57,7 +57,7 @@ v0.3.3の正規配布物は、macOSのセキュリティ警告を回避する操
 アプリを置き換えても、既存のSQLite履歴と表示設定は利用者のライブラリ内に残ります。
 自動更新機能はありません。
 
-### v0.3.3検証済み候補の照合値
+### v0.3.3配布物の照合値
 
 ```sh
 shasum -a 256 MemoryWatcher-0.3.3.zip
@@ -69,9 +69,9 @@ shasum -a 256 MemoryWatcher-0.3.3.zip
 861079b48b6d7c2ba6d5424683917b375044824d3f5d88a22acc7aeae692844c
 ```
 
-この値は署名・公証・ZIP展開後検証を通過したローカル候補と工程24記録の照合値です。
-同じ値が文書にあることは、第三者がGitHubからZIPを取得できることの証明では
-ありません。v0.3.3公開後は、実際にダウンロードしたZIPの値と比較してください。
+この値は署名・公証・ZIP展開後検証を通過した候補、工程24記録、GitHubへ公開後に
+再ダウンロードしたZIPで一致しています。利用時は、実際にダウンロードしたZIPの
+値と比較してください。
 公開時の変更内容と検証範囲は
 [v0.3.3 Release Notes](docs/Release_Notes_v0.3.3.md)にもまとめています。
 
@@ -79,7 +79,7 @@ shasum -a 256 MemoryWatcher-0.3.3.zip
 
 | 対象 | 対応範囲 | 現在の検証状態 |
 |---|---|---|
-| v0.3.3検証済み配布候補 | macOS 14以降、Apple Silicon（arm64） | M2・16 GB Macで署名、公証、インストール、実記録を確認。Release公開は未完了 |
+| v0.3.3配布アプリ | macOS 14以降、Apple Silicon（arm64） | M2・16 GB Macで署名、公証、インストール、実記録を確認。GitHub Releaseで公開済み |
 | ソースからのビルド | macOS 14以降、Apple SiliconおよびIntel（x86_64） | Intel向けビルドは確認済み。Intel実機での動作は未検証 |
 | CPU構成 | 論理CPU数を実行時に取得 | 1・8・16・32論理CPUのテストデータで確認 |
 
@@ -89,7 +89,7 @@ shasum -a 256 MemoryWatcher-0.3.3.zip
 
 ただし、実機での長時間運転確認はM2 Macが中心です。ほかのApple Silicon機種と
 Intel Macについて、同じ範囲の実機監査が完了したとは扱いません。v0.3.3の
-検証済みZIPはUniversal Binaryではなく、Apple Silicon専用です。
+配布ZIPはUniversal Binaryではなく、Apple Silicon専用です。
 
 履歴はMacごとに独立します。別のMacへの履歴同期、移行、自動統合は行いません。
 
@@ -239,5 +239,5 @@ incidentがあればその工程で停止します。
 
 各工程の詳細は[docs](docs/)に保存しています。v0.3.3では全134テスト、
 Release build、署名、公証、ZIP展開後検証、インストール後のSQLite実記録読戻しが
-完了しています。GitHub Releaseへのv0.3.3 ZIP公開、Intel実機、Universal Binary
-配布は未完了です。
+完了しています。GitHub Releaseへのv0.3.3 ZIP公開と公開後の再ダウンロード検証も
+完了しています。Intel実機とUniversal Binary配布は未完了です。
