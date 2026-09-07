@@ -89,5 +89,25 @@ Intel実機でのv0.3.3動作とUniversal Binaryの配布はこの工程では�
 - [x] 公開物へ認証情報、submission ID、端末固有情報を含めない
 
 工程24の実装は1個の非merge commitへまとめ、ready Pull Request、merge commit、
-GitHub remote readbackを経て完了とします。GitHub Releaseの配布ZIPは、上記SHA-256
-との一致をremoteから読み戻して判定します。
+GitHub remote readbackを経て完了とします。
+
+## GitHub Release公開後の読戻し
+
+2026-09-07に
+[GitHub Release v0.3.3](https://github.com/Oneroad-jpg/memory_watcher/releases/tag/v0.3.3)
+を公開し、公開先から配布ZIPを新しい一時領域へ再ダウンロードしました。
+
+| 項目 | 公開後の観測結果 |
+|---|---|
+| Release | public、非draft、非prerelease、Latest |
+| asset | `MemoryWatcher-0.3.3.zip`、818,209 bytes、uploaded |
+| GitHub asset digest | `sha256:861079b48b6d7c2ba6d5424683917b375044824d3f5d88a22acc7aeae692844c` |
+| 再ダウンロードSHA-256 | 工程24の配布ZIP SHA-256と一致 |
+| ZIP整合性 | 全項目OK |
+| 展開後署名 | strict codesign PASS |
+| 展開後公証 | `stapler validate` PASS |
+| 展開後Gatekeeper | `accepted`、`source=Notarized Developer ID` |
+| version / architecture | 0.3.3 / arm64 |
+
+これにより、ローカル候補の検証とGitHub上の公開配布物の検証を分けたうえで、
+同一バイトの公開と読戻しを確認しました。

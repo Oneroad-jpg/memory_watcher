@@ -65,3 +65,7 @@ shasum -a 256 MemoryWatcher-0.3.3.zip
 
 詳細は[README](../README.md)と
 [工程24署名・公証検証](Phase_24_Verification.md)を参照してください。
+
+## ライセンス
+
+MIT Licenseで公開します。Copyright (c) 2026 Office OneRoad.
