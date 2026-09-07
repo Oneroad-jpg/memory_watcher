@@ -3,9 +3,10 @@
 Memory Watcherは、macOS全体のメモリとCPUを継続的に記録し、あとから
 12時間・24時間・3日の履歴を見返せる軽量なメニューバーアプリです。
 
-現在の公開版v0.3.2では、標準ウインドウの上部余白を縮め、8論理CPUの履歴を
+現在の公開版v0.3.3では、標準ウインドウの上部余白を縮め、8論理CPUの履歴を
 2列4行で一覧表示できます。選択した時刻のメモリとCPUの実測値は、
-文字の大きな表で確認できます。
+文字の大きな表で確認できます。GitHub ReleaseのアプリはDeveloper IDで署名・
+公証され、Gatekeeperで検証できます。
 
 本プロジェクトは、Codexによるノンコード開発のアプリです。利用者が
 コードを直接記述せず、Codexとの対話で要件定義・実装・検証を進めます。
@@ -129,6 +130,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - v0.3.1完成
 - 完了: 工程23「選択時刻詳細の表形式化」
 - v0.3.2完成
+- 完了: 工程24「Developer ID署名・公証」
+- v0.3.3完成
 - 工程表: [v0.1確定工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - 確定要件: [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - 工程10検証記録: [24時間実運転](docs/Phase_10_Verification.md)
@@ -151,6 +154,8 @@ v0.1は工程ごとに独立した1コミットとPull Requestで進めます。
 - 工程22検証記録: [上部余白削減・CPU一覧](docs/Phase_22_Verification.md)
 - v0.3.2計画: [選択時刻詳細表 工程表](docs/Memory_Watcher_v0.3.2_Selection_Detail_Table_Plan.md)
 - 工程23検証記録: [選択時刻詳細の表形式化](docs/Phase_23_Verification.md)
+- v0.3.3計画: [Developer ID署名・公証工程表](docs/Memory_Watcher_v0.3.3_Developer_ID_Notarization_Plan.md)
+- 工程24検証記録: [Developer ID署名・公証](docs/Phase_24_Verification.md)
 
 ## 開発
 
@@ -166,3 +171,37 @@ scripts/install-release-app.sh 0.1.0
 
 外部パッケージには依存しません。Apple SDKとmacOS同梱SQLiteだけを
 使用します。
+
+### Developer ID署名と公証
+
+Mac App Store外で配布する公開版は、`Developer ID Application`証明書、
+Hardened Runtime、安全なタイムスタンプを使って署名します。Appleの
+公証サービスへ送信したあと、発行されたチケットを`.app`へ添付し、
+Gatekeeperで受理されることまで確認します。
+
+```sh
+MEMORY_WATCHER_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+  scripts/build-release-app.sh 0.3.3 1
+MEMORY_WATCHER_NOTARY_PROFILE="MemoryWatcher-Notarization" \
+  MEMORY_WATCHER_NOTARY_KEYCHAIN="/path/to/login.keychain-db" \
+  scripts/notarize-release-app.sh 0.3.3
+MEMORY_WATCHER_ALLOW_UPGRADE=1 \
+  scripts/install-release-app.sh 0.3.3
+```
+
+`MEMORY_WATCHER_NOTARY_PROFILE`は、事前に`notarytool store-credentials`で
+ログインキーチェーンへ保存した認証情報の名前です。
+`MEMORY_WATCHER_NOTARY_KEYCHAIN`は、そのファイルベースのキーチェーンを
+明示する任意設定です。Apple Account、
+アプリ用パスワード、APIキーなどの認証情報をソース、ログ、配布ZIPへ
+保存してはいけません。公証完了は、`Accepted`、`stapler validate`、
+`spctl --assess`のすべてが成功した場合に限ります。
+
+公証申請が`Accepted`になった後でローカル処理だけが中断した場合は、
+`MEMORY_WATCHER_NOTARY_SUBMISSION_ID`へ既存のsubmission IDを指定します。
+この復帰経路は`notarytool info`から再開し、同じZIPを再送信しません。
+
+既存版から更新する場合、`MEMORY_WATCHER_ALLOW_UPGRADE=1`を明示したときだけ
+インストールします。旧版は`.build/installed-app-backups/`へ退避され、署名、
+公証チケット、Gatekeeper評価またはファイル照合に失敗した場合は自動的に
+復元されます。Memory Watcherが起動中の更新は拒否します。

@@ -8,6 +8,15 @@ readonly VERSION="${1:-0.1.0}"
 readonly BUILD_NUMBER="${2:-1}"
 readonly SIGNING_IDENTITY="${MEMORY_WATCHER_SIGNING_IDENTITY:--}"
 
+typeset -a TIMESTAMP_ARGUMENTS
+if [[ "${SIGNING_IDENTITY}" == "-" ]]; then
+    TIMESTAMP_ARGUMENTS=(--timestamp=none)
+    readonly TIMESTAMP_MODE="none"
+else
+    TIMESTAMP_ARGUMENTS=(--timestamp)
+    readonly TIMESTAMP_MODE="secure"
+fi
+
 [[ "${VERSION}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || {
     print -u2 -- "version must use major.minor.patch"
     exit 2
@@ -76,9 +85,28 @@ readonly PLIST_PATH="${STAGING_APP}/Contents/Info.plist"
     --force \
     --options runtime \
     --sign "${SIGNING_IDENTITY}" \
-    --timestamp=none \
+    "${TIMESTAMP_ARGUMENTS[@]}" \
     "${STAGING_APP}"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "${STAGING_APP}"
+
+if [[ "${SIGNING_IDENTITY}" != "-" ]]; then
+    readonly SIGNING_DETAILS="$(/usr/bin/codesign \
+        --display \
+        --verbose=4 \
+        "${STAGING_APP}" 2>&1)"
+    [[ "${SIGNING_DETAILS}" == *"Authority=Developer ID Application:"* ]] || {
+        print -u2 -- "release app was not signed with Developer ID Application"
+        exit 7
+    }
+    [[ "${SIGNING_DETAILS}" == *"Runtime Version="* ]] || {
+        print -u2 -- "release app does not declare hardened runtime"
+        exit 8
+    }
+    [[ "${SIGNING_DETAILS}" == *"Timestamp="* ]] || {
+        print -u2 -- "release app does not contain a secure timestamp"
+        exit 9
+    }
+fi
 
 if [[ -e "${APP_PATH}" ]]; then
     /bin/rm -rf -- "${APP_PATH}"
@@ -96,11 +124,12 @@ readonly ARCHIVE_SHA="$(/usr/bin/shasum -a 256 \
     "${ARCHIVE_PATH}" | /usr/bin/awk '{print $1}')"
 
 /usr/bin/printf \
-    'version=%s\nbuild=%s\napp=%s\narchive=%s\nexecutable_sha256=%s\narchive_sha256=%s\nsigning_identity=%s\n' \
+    'version=%s\nbuild=%s\napp=%s\narchive=%s\nexecutable_sha256=%s\narchive_sha256=%s\nsigning_identity=%s\ntimestamp=%s\n' \
     "${VERSION}" \
     "${BUILD_NUMBER}" \
     "${APP_PATH}" \
     "${ARCHIVE_PATH}" \
     "${EXECUTABLE_SHA}" \
     "${ARCHIVE_SHA}" \
-    "${SIGNING_IDENTITY}"
+    "${SIGNING_IDENTITY}" \
+    "${TIMESTAMP_MODE}"
