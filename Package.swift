@@ -5,9 +5,14 @@ import PackageDescription
 let package = Package(
   name: "MemoryWatcher",
   platforms: [
-    .macOS(.v14)
+    .macOS(.v14),
+    .watchOS(.v10)
   ],
   products: [
+    .library(
+      name: "MemoryWatcherShared",
+      targets: ["MemoryWatcherShared"]
+    ),
     .library(
       name: "MemoryWatcherCore",
       targets: ["MemoryWatcherCore"]
@@ -30,8 +35,11 @@ let package = Package(
       name: "CSQLite"
     ),
     .target(
+      name: "MemoryWatcherShared"
+    ),
+    .target(
       name: "MemoryWatcherCore",
-      dependencies: ["CSQLite"]
+      dependencies: ["CSQLite", "MemoryWatcherShared"]
     ),
     .executableTarget(
       name: "MemoryWatcherApp",
@@ -52,6 +60,10 @@ let package = Package(
     .testTarget(
       name: "MemoryWatcherAuditTests",
       dependencies: ["MemoryWatcherAudit", "MemoryWatcherCore"]
+    ),
+    .testTarget(
+      name: "MemoryWatcherSharedTests",
+      dependencies: ["MemoryWatcherShared"]
     ),
   ]
 )
