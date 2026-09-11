@@ -162,6 +162,18 @@ Memory Watcherを終了したうえで上記の `MemoryWatcher` フォルダを�
 - Activity Monitorの完全な複製
 - 自動更新
 
+## Memory Watch：Apple Watch対応の開発設計図
+
+現行のv0.3.3配布物にはApple Watch対応を含みません。後続版向けの開発ブランチでは、
+現在の測定・保存・プライバシー境界を維持しながら、Apple Watchの読取専用UIと
+共有契約層を用意しています。
+
+5 Layer / 14 Phaseは全Phaseの実装を強制するものではありません。必要なPhaseだけを
+定義し、使わないPhaseは責務を補完せず`UNDEFINED`として保持します。現時点では
+ライブ転送を接続していません。詳細は
+[Memory Watch 5 Layer / 14 Phase 設計図](docs/Memory_Watch_5L14P_Architecture_Blueprint.md)
+を参照してください。
+
 ## ライセンス
 
 Memory Watcherは[MIT License](LICENSE)で公開します。
