@@ -251,6 +251,7 @@ incidentがあればその工程で停止します。
 
 主な設計・検証記録:
 
+- [2層3セクション設計方針](docs/Architecture_Two_Layer_Three_Section.md)
 - [v0.1確定要件](docs/Memory_Watcher_v0.1_Requirements.md)
 - [v0.1実装工程表](docs/Memory_Watcher_v0.1_Final_Implementation_Plan.md)
 - [メモリ指標定義](docs/Memory_Metric_Definitions_v1.md)
